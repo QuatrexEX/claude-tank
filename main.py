@@ -1,19 +1,24 @@
 """Claude Tank — Entry point.
 
-Launches the system tray, taskbar widget, and polling loop.
-Uses pywebview for all GUI windows and pystray for the system tray icon.
+Architecture:
+1. A pywebview "session window" opens claude.ai — user logs in there.
+2. After login, the session window is hidden and reused for API calls
+   (via WebViewAPIClient which runs fetch() inside WebView2).
+3. System tray + taskbar widget show usage data.
+4. No cookies are extracted or stored — the WebView2 manages its own session.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import sys
 import threading
 
 from core import i18n
-from core.auth import has_credentials, load_credentials
-from core.config import AppConfig
+from core.config import AppConfig, app_dir
 from core.poller import UsagePoller
+from core.plan_detector import detect_plan
 from tray.tray_app import TrayApp
 from ui.widget_manager import WidgetManager
 
@@ -32,51 +37,82 @@ class App:
         self.widget_mgr = WidgetManager(self.config)
         self.tray: TrayApp | None = None
         self.poller: UsagePoller | None = None
-        self._plan = ""
 
     def run(self) -> None:
-        if has_credentials():
-            self._start_monitoring()
-        else:
-            self._show_setup()
+        # Always create the session window (navigated to claude.ai)
+        # Check if we have a saved org_id (returning user)
+        session_file = app_dir() / "session.json"
+        has_session = session_file.exists()
 
-        # pywebview event loop (blocks until all windows closed)
+        # Create session window — visible for login, or hidden for returning users
+        self.widget_mgr.create_session_window(visible=not has_session)
+        self.widget_mgr.set_on_login_complete(self._on_login_complete)
+
+        if has_session:
+            # Returning user: try to verify session in background
+            threading.Thread(target=self._try_resume_session, daemon=True).start()
+
+        # pywebview event loop (blocks)
         self.widget_mgr.start_webview_loop()
 
-    def _show_setup(self) -> None:
-        self.widget_mgr.show_setup(on_complete=self._on_setup_complete)
-
-    def _on_setup_complete(self, session_key: str, org_id: str, plan: str) -> None:
-        self._plan = plan
-        self.widget_mgr.set_plan(plan)
-        self.widget_mgr.close_setup()
-        self._start_with_credentials(session_key, org_id)
-
-    def _start_monitoring(self) -> None:
-        creds = load_credentials()
-        if not creds:
-            self._show_setup()
-            return
-        session_key, org_id = creds
-        # Detect plan from API
-        from core.api_client import ClaudeAPIClient
-        from core.plan_detector import detect_plan
+    def _try_resume_session(self) -> None:
+        """Try to resume an existing session (returning user)."""
+        import time
+        time.sleep(3)  # Wait for webview to load
         try:
-            client = ClaudeAPIClient(session_key)
-            orgs = client.get_organizations()
-            self._plan = detect_plan(orgs[0]) if orgs else "Unknown"
-        except Exception:
-            self._plan = "Unknown"
-        self._start_with_credentials(session_key, org_id)
+            session_file = app_dir() / "session.json"
+            data = json.loads(session_file.read_text(encoding="utf-8"))
+            org_id = data.get("org_id", "")
 
-    def _start_with_credentials(self, session_key: str, org_id: str) -> None:
-        self.widget_mgr.set_plan(self._plan)
+            client = self.widget_mgr.api_client
+            if not client:
+                from core.webview_api import WebViewAPIClient
+                # Need to wait for session window to be ready
+                for _ in range(10):
+                    if self.widget_mgr._session_win:
+                        client = WebViewAPIClient(self.widget_mgr._session_win)
+                        break
+                    time.sleep(1)
 
-        # Create widget windows
+            if not client:
+                log.warning("Could not create API client, showing login")
+                self.widget_mgr.show_login()
+                return
+
+            success, verified_org_id, error = client.test_connection()
+            if success:
+                log.info("Session resumed successfully")
+                self.widget_mgr._api_client = client
+                self.widget_mgr._org_id = verified_org_id or org_id
+
+                # Detect plan
+                try:
+                    orgs = client.get_organizations()
+                    plan = detect_plan(orgs[0]) if orgs else "Unknown"
+                except Exception:
+                    plan = "Unknown"
+                self.widget_mgr.set_plan(plan)
+                self._start_monitoring(client, verified_org_id or org_id)
+            else:
+                log.warning("Session expired, showing login: %s", error)
+                self.widget_mgr.show_login()
+        except Exception as e:
+            log.warning("Failed to resume session: %s", e)
+            self.widget_mgr.show_login()
+
+    def _on_login_complete(self) -> None:
+        """Called after user successfully logs in via the session window."""
+        client = self.widget_mgr.api_client
+        org_id = self.widget_mgr._org_id
+        if client and org_id:
+            self._start_monitoring(client, org_id)
+
+    def _start_monitoring(self, client, org_id: str) -> None:
+        """Start the widget, tray, and poller."""
         self.widget_mgr.create_widget()
         self.widget_mgr.create_hover_panel()
 
-        # Start tray in a thread
+        # Start tray
         self.tray = TrayApp(
             config=self.config,
             on_dashboard=self._on_dashboard,
@@ -88,9 +124,9 @@ class App:
         )
         threading.Thread(target=self.tray.start, daemon=True).start()
 
-        # Start poller
+        # Start poller using WebView API client
         self.poller = UsagePoller(
-            session_key=session_key,
+            client=client,
             org_id=org_id,
             interval_sec=self.config.poll_interval_sec,
             on_update=self._on_usage_update,
@@ -99,16 +135,13 @@ class App:
         self.poller.start()
 
     def _on_usage_update(self, data) -> None:
-        log.info(
-            "Usage updated: 5h=%.0f%% 7d=%.0f%%",
-            data.five_hour, data.seven_day,
-        )
+        log.info("Usage: 5h=%.0f%% 7d=%.0f%%", data.five_hour, data.seven_day)
         self.widget_mgr.update_usage(data)
         if self.tray:
             self.tray.update_usage(data)
 
     def _on_poll_error(self, error: str, consecutive: int) -> None:
-        log.warning("Poll error (%d consecutive): %s", consecutive, error)
+        log.warning("Poll error (%d): %s", consecutive, error)
         if consecutive >= 3 and self.tray:
             self.tray.set_offline()
 
@@ -120,7 +153,7 @@ class App:
             threading.Thread(target=self.poller.poll_once, daemon=True).start()
 
     def _on_update_key(self) -> None:
-        self._show_setup()
+        self.widget_mgr.show_login()
 
     def _on_quit(self) -> None:
         log.info("Quitting...")

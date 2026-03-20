@@ -38,13 +38,24 @@ class ClaudeAPIError(Exception):
 
 
 class ClaudeAPIClient:
-    def __init__(self, session_key: str) -> None:
+    def __init__(self, session_key: str, extra_cookies: dict[str, str] | None = None) -> None:
         self._session = requests.Session()
+        # Mimic a real browser to bypass Cloudflare bot detection
         self._session.headers.update({
             "Accept": "application/json",
-            "User-Agent": "claude-tank/1.0 (Quatrex)",
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/131.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://claude.ai/",
+            "Origin": "https://claude.ai",
         })
         self._session.cookies.set("sessionKey", session_key, domain="claude.ai")
+        if extra_cookies:
+            for name, value in extra_cookies.items():
+                self._session.cookies.set(name, value, domain=".claude.ai")
 
     def get_organizations(self) -> list[dict[str, Any]]:
         resp = self._session.get(

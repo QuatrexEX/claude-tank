@@ -1,58 +1,50 @@
-"""Claude Tank — pywebview window management."""
+"""Claude Tank — pywebview window management.
+
+Architecture:
+- A "session window" (hidden) stays navigated to claude.ai and acts as our
+  browser session. All API calls go through this window's fetch() via
+  WebViewAPIClient, completely bypassing Cloudflare.
+- During setup, the session window is shown so the user can log in.
+- After login, it is hidden and reused for background API polling.
+"""
 
 from __future__ import annotations
 
 import ctypes
 import json
 import logging
-import os
 import threading
-import webbrowser
+import time
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import webview  # type: ignore[import-untyped]
 
-from core.api_client import ClaudeAPIClient, UsageData
-from core.auth import save_credentials
-from core.config import AppConfig
-from core.i18n import t
+from core.api_client import UsageData
+from core.config import AppConfig, app_dir
 from core.plan_detector import detect_plan
+from core.webview_api import WebViewAPIClient
 
 log = logging.getLogger("claude-tank")
 
 _WEB_DIR = Path(__file__).resolve().parent / "web"
+_WEBVIEW_STORAGE = str(app_dir() / "webview_data")
 
 
-class _SetupAPI:
-    """JS API exposed to the setup wizard window."""
+class _LoginAPI:
+    """JS API exposed to the session/login window."""
 
-    def __init__(self, on_complete: callable) -> None:
-        self._on_complete = on_complete
-        self._org_id = ""
-        self._plan = ""
+    def __init__(self, manager: WidgetManager) -> None:
+        self._mgr = manager
 
-    def open_claude_ai(self) -> None:
-        webbrowser.open("https://claude.ai")
+    def check_login(self) -> dict[str, Any]:
+        """Called from JS to check if user is logged in."""
+        return self._mgr._check_login_status()
 
-    def test_connection(self, session_key: str) -> dict[str, Any]:
-        try:
-            client = ClaudeAPIClient(session_key)
-            success, org_id, error = client.test_connection()
-            if success:
-                self._org_id = org_id
-                orgs = client.get_organizations()
-                self._plan = detect_plan(orgs[0]) if orgs else "Unknown"
-                return {"success": True, "plan": self._plan}
-            return {"success": False, "error": error}
-        except Exception as e:
-            return {"success": False, "error": str(e)}
-
-    def save_and_start(self, session_key: str) -> None:
-        if self._org_id:
-            save_credentials(session_key, self._org_id)
-            self._on_complete(session_key, self._org_id, self._plan)
+    def confirm_login(self) -> dict[str, Any]:
+        """Called when user clicks 'I'm logged in'."""
+        return self._mgr._confirm_login()
 
 
 class _WidgetAPI:
@@ -71,55 +63,140 @@ class _WidgetAPI:
 class WidgetManager:
     def __init__(self, config: AppConfig) -> None:
         self._config = config
+        self._session_win: webview.Window | None = None
         self._widget_win: webview.Window | None = None
         self._hover_win: webview.Window | None = None
         self._dashboard_win: webview.Window | None = None
-        self._setup_win: webview.Window | None = None
-        self._started = threading.Event()
         self._plan_name = ""
+        self._org_id = ""
         self._last_data: UsageData | None = None
         self._strings: dict[str, str] = {}
+        self._on_login_complete: callable | None = None
+        self._api_client: WebViewAPIClient | None = None
 
     def _load_strings(self) -> dict[str, str]:
-        """Load i18n strings as a dict for passing to JS."""
         from core import i18n as i18n_mod
-        locale_path = Path(__file__).resolve().parent.parent / "locales" / f"{i18n_mod.current_locale()}.json"
+        locale_path = (Path(__file__).resolve().parent.parent
+                       / "locales" / f"{i18n_mod.current_locale()}.json")
         if locale_path.exists():
             self._strings = json.loads(locale_path.read_text(encoding="utf-8"))
         return self._strings
 
-    def start_webview_loop(self) -> None:
-        """Start the pywebview event loop. Must be called from main thread of subprocess."""
-        self._started.set()
-        webview.start(debug=False)
+    @property
+    def api_client(self) -> WebViewAPIClient | None:
+        return self._api_client
 
-    def show_setup(self, on_complete: callable) -> None:
-        """Show the setup wizard."""
-        self._load_strings()
-        api = _SetupAPI(on_complete)
-        self._setup_win = webview.create_window(
-            "Claude Tank — Setup",
-            str(_WEB_DIR / "setup.html"),
-            width=500,
-            height=620,
-            resizable=False,
+    # ──────────────────── Session window (login + API) ────────────────────
+
+    def create_session_window(self, visible: bool = False) -> None:
+        """Create the session window navigated to claude.ai.
+        If visible=True, user can log in. If hidden, used for background API.
+        """
+        api = _LoginAPI(self)
+        self._session_win = webview.create_window(
+            "Claude Tank — Login",
+            "https://claude.ai",
+            width=1024,
+            height=720,
             js_api=api,
-            text_select=False,
+            hidden=not visible,
+            text_select=True,
         )
 
         def _on_loaded():
-            if self._setup_win and self._strings:
-                js = f"if(typeof applyStrings==='function')applyStrings({json.dumps(self._strings)})"
-                self._setup_win.evaluate_js(js)
+            if self._session_win and visible:
+                # Inject a floating "I'm logged in" button
+                self._inject_login_button()
 
-        self._setup_win.events.loaded += _on_loaded
+        self._session_win.events.loaded += _on_loaded
+
+    def _inject_login_button(self) -> None:
+        """Inject a small button into the claude.ai page for the user
+        to confirm they are logged in."""
+        js = """
+        (function() {
+            if (document.getElementById('ct-login-btn')) return;
+            var btn = document.createElement('div');
+            btn.id = 'ct-login-btn';
+            btn.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:99999;' +
+                'padding:12px 24px;background:#00ffcc;color:#000;font-weight:700;' +
+                'font-size:14px;border-radius:8px;cursor:pointer;font-family:system-ui;' +
+                'box-shadow:0 4px 20px rgba(0,255,204,0.3);transition:transform 0.2s';
+            btn.textContent = '\\u2713 I\\'m logged in — Start Claude Tank';
+            btn.onmouseenter = function() { btn.style.transform = 'scale(1.05)'; };
+            btn.onmouseleave = function() { btn.style.transform = 'scale(1)'; };
+            btn.onclick = function() {
+                btn.textContent = 'Connecting...';
+                btn.style.background = '#eab308';
+                pywebview.api.confirm_login().then(function(r) {
+                    if (r.success) {
+                        btn.textContent = '\\u2713 Connected! Plan: ' + r.plan;
+                        btn.style.background = '#22c55e';
+                    } else {
+                        btn.textContent = '\\u2717 ' + r.error + ' — Try again';
+                        btn.style.background = '#ef4444';
+                        setTimeout(function() {
+                            btn.textContent = '\\u2713 I\\'m logged in — Start Claude Tank';
+                            btn.style.background = '#00ffcc';
+                        }, 3000);
+                    }
+                });
+            };
+            document.body.appendChild(btn);
+        })();
+        """
+        try:
+            self._session_win.evaluate_js(js)
+        except Exception:
+            pass
+
+    def _check_login_status(self) -> dict[str, Any]:
+        """Check if the user is logged in by trying an API call."""
+        if not self._session_win:
+            return {"logged_in": False}
+        client = WebViewAPIClient(self._session_win)
+        success, org_id, error = client.test_connection()
+        return {"logged_in": success, "org_id": org_id, "error": error}
+
+    def _confirm_login(self) -> dict[str, Any]:
+        """User confirmed they are logged in. Verify and transition."""
+        if not self._session_win:
+            return {"success": False, "error": "No session window"}
+        client = WebViewAPIClient(self._session_win)
+        try:
+            success, org_id, error = client.test_connection()
+            if not success:
+                return {"success": False, "error": error}
+            self._org_id = org_id
+            self._api_client = client
+            orgs = client.get_organizations()
+            self._plan_name = detect_plan(orgs[0]) if orgs else "Unknown"
+
+            # Save org_id for future reference
+            config_path = app_dir() / "session.json"
+            config_path.write_text(json.dumps({"org_id": org_id}), encoding="utf-8")
+
+            # Hide session window, start monitoring
+            threading.Thread(target=self._transition_to_monitoring, daemon=True).start()
+
+            return {"success": True, "plan": self._plan_name}
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def _transition_to_monitoring(self) -> None:
+        """Hide login window, create widget, start monitoring."""
+        time.sleep(1)  # Let the success message show
+        if self._session_win:
+            self._session_win.hide()
+        if self._on_login_complete:
+            self._on_login_complete()
+
+    # ──────────────────── Widget + Hover ────────────────────
 
     def create_widget(self) -> None:
-        """Create the small taskbar widget window."""
         self._load_strings()
         api = _WidgetAPI(self)
 
-        # Get screen size to position widget near taskbar
         try:
             user32 = ctypes.windll.user32
             screen_w = user32.GetSystemMetrics(0)
@@ -129,8 +206,8 @@ class WidgetManager:
 
         widget_w = 320
         widget_h = 44
-        x = screen_w - widget_w - 200  # Left of system tray area
-        y = screen_h - widget_h - 4    # Bottom edge, above taskbar
+        x = screen_w - widget_w - 200
+        y = screen_h - widget_h - 4
 
         self._widget_win = webview.create_window(
             "Claude Tank",
@@ -148,7 +225,6 @@ class WidgetManager:
         )
 
     def create_hover_panel(self) -> None:
-        """Create the hover popup panel (hidden initially)."""
         self._hover_win = webview.create_window(
             "Claude Tank — Details",
             str(_WEB_DIR / "hover.html"),
@@ -163,7 +239,6 @@ class WidgetManager:
         )
 
     def show_dashboard(self) -> None:
-        """Show or create the dashboard window."""
         if self._dashboard_win:
             try:
                 self._dashboard_win.show()
@@ -180,22 +255,17 @@ class WidgetManager:
             resizable=True,
             text_select=False,
         )
-
-        def _on_loaded():
-            self._push_to_dashboard()
-
-        self._dashboard_win.events.loaded += _on_loaded
-
-    def close_setup(self) -> None:
-        if self._setup_win:
-            self._setup_win.destroy()
-            self._setup_win = None
+        self._dashboard_win.events.loaded += lambda: self._push_to_dashboard()
 
     def set_plan(self, plan: str) -> None:
         self._plan_name = plan
 
+    def set_on_login_complete(self, callback: callable) -> None:
+        self._on_login_complete = callback
+
+    # ──────────────────── Data push ────────────────────
+
     def update_usage(self, data: UsageData) -> None:
-        """Push new usage data to all active windows."""
         self._last_data = data
         self._push_to_widget()
         self._push_to_hover()
@@ -266,7 +336,6 @@ class WidgetManager:
         if not self._hover_win:
             return
         try:
-            # Position above the widget
             if self._widget_win:
                 x = self._widget_win.x
                 y = self._widget_win.y - 390
@@ -287,8 +356,18 @@ class WidgetManager:
             except Exception:
                 pass
 
+    def show_login(self) -> None:
+        """Show the login/session window for re-authentication."""
+        if self._session_win:
+            self._session_win.show()
+            self._session_win.load_url("https://claude.ai")
+
+    def start_webview_loop(self) -> None:
+        webview.start(debug=False)
+
     def destroy_all(self) -> None:
-        for win in (self._widget_win, self._hover_win, self._dashboard_win, self._setup_win):
+        for win in (self._widget_win, self._hover_win,
+                    self._dashboard_win, self._session_win):
             if win:
                 try:
                     win.destroy()

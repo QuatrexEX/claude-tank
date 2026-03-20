@@ -4,24 +4,27 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
-from typing import Callable
+from typing import Any, Callable, Protocol
 
-from core.api_client import ClaudeAPIClient, ClaudeAPIError, UsageData
+from core.api_client import ClaudeAPIError, UsageData
 
 log = logging.getLogger("claude-tank")
+
+
+class APIClient(Protocol):
+    def get_usage(self, org_id: str) -> UsageData: ...
 
 
 class UsagePoller:
     def __init__(
         self,
-        session_key: str,
+        client: Any,  # WebViewAPIClient or ClaudeAPIClient
         org_id: str,
         interval_sec: int = 180,
         on_update: Callable[[UsageData], None] | None = None,
         on_error: Callable[[str, int], None] | None = None,
     ) -> None:
-        self._client = ClaudeAPIClient(session_key)
+        self._client = client
         self._org_id = org_id
         self._interval = interval_sec
         self._on_update = on_update
@@ -78,7 +81,6 @@ class UsagePoller:
         self._interval = seconds
 
     def _poll_loop(self) -> None:
-        # Initial fetch
         self.poll_once()
         while not self._stop_event.is_set():
             wait = self._interval * self._backoff_multiplier
