@@ -25,17 +25,23 @@ def _dpapi_decrypt(data: bytes) -> bytes:
     return decrypted
 
 
-def save_credentials(session_key: str, org_id: str) -> None:
+def save_credentials(
+    session_key: str,
+    org_id: str,
+    extra_cookies: dict[str, str] | None = None,
+) -> None:
     payload = json.dumps({
         "session_key": session_key,
         "org_id": org_id,
+        "extra_cookies": extra_cookies or {},
     }).encode("utf-8")
     encrypted = _dpapi_encrypt(payload)
     path = app_dir() / _CRED_FILE
     path.write_bytes(base64.b64encode(encrypted))
 
 
-def load_credentials() -> tuple[str, str] | None:
+def load_credentials() -> tuple[str, str, dict[str, str]] | None:
+    """Returns (session_key, org_id, extra_cookies) or None."""
     path = app_dir() / _CRED_FILE
     if not path.exists():
         return None
@@ -43,7 +49,11 @@ def load_credentials() -> tuple[str, str] | None:
         encrypted = base64.b64decode(path.read_bytes())
         decrypted = _dpapi_decrypt(encrypted)
         data = json.loads(decrypted.decode("utf-8"))
-        return data["session_key"], data["org_id"]
+        return (
+            data["session_key"],
+            data["org_id"],
+            data.get("extra_cookies", {}),
+        )
     except Exception:
         return None
 
