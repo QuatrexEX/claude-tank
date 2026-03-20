@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/theme-cyber.css">
+  <style>
+    body { padding: 32px; overflow-y: auto; }
+    .setup-container { max-width: 440px; margin: 0 auto; }
+    h1 { font-size: 22px; margin-bottom: 4px; color: var(--accent); }
+    .subtitle { font-size: 13px; color: var(--text-secondary); margin-bottom: 24px; }
+    .steps { list-style: none; margin-bottom: 24px; }
+    .steps li {
+      padding: 8px 0;
+      font-size: 13px;
+      color: var(--text-primary);
+      display: flex;
+      gap: 8px;
+    }
+    .step-num {
+      min-width: 22px; height: 22px;
+      background: var(--accent);
+      color: var(--bg-primary);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 11px; font-weight: 700;
+    }
+    .btn {
+      display: inline-block;
+      padding: 10px 20px;
+      border: 1px solid var(--accent);
+      background: transparent;
+      color: var(--accent);
+      font-size: 13px;
+      font-family: var(--font-main);
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn:hover { background: var(--accent); color: var(--bg-primary); }
+    .btn-primary {
+      background: var(--accent);
+      color: var(--bg-primary);
+      font-weight: 600;
+    }
+    .btn-primary:hover { opacity: 0.9; }
+    .btn-row { display: flex; gap: 12px; margin-top: 20px; }
+    .input-group { margin: 20px 0; }
+    .input-group label {
+      display: block;
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .input-group input {
+      width: 100%;
+      padding: 10px 14px;
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      outline: none;
+    }
+    .input-group input:focus { border-color: var(--accent); }
+    .status {
+      margin-top: 12px;
+      padding: 10px;
+      border-radius: var(--radius);
+      font-size: 12px;
+      display: none;
+    }
+    .status.success { display: block; background: #22c55e20; color: #22c55e; border: 1px solid #22c55e40; }
+    .status.error { display: block; background: #ef444420; color: #ef4444; border: 1px solid #ef444440; }
+    .status.loading { display: block; background: #eab30820; color: #eab308; border: 1px solid #eab30840; }
+    .security-note {
+      margin-top: 24px;
+      padding: 12px;
+      background: var(--bg-secondary);
+      border-radius: var(--radius);
+      font-size: 11px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+  </style>
+</head>
+<body class="theme-cyber">
+  <div class="setup-container fade-in">
+    <h1 id="title">Claude Tank</h1>
+    <div class="subtitle" id="desc">Monitor your Claude usage right from the taskbar.</div>
+
+    <ol class="steps" id="steps">
+      <li><span class="step-num">1</span><span id="step1">Click below to log in to claude.ai</span></li>
+      <li><span class="step-num">2</span><span id="step2">Open Developer Tools (F12)</span></li>
+      <li><span class="step-num">3</span><span id="step3">Go to Application &rarr; Cookies &rarr; claude.ai</span></li>
+      <li><span class="step-num">4</span><span id="step4">Copy the value of &ldquo;sessionKey&rdquo;</span></li>
+      <li><span class="step-num">5</span><span id="step5">Paste it below</span></li>
+    </ol>
+
+    <button class="btn" id="btn-open" onclick="openClaude()">Open claude.ai</button>
+
+    <div class="input-group">
+      <label id="lbl-key">Session Key</label>
+      <input type="password" id="session-key" placeholder="sk-ant-sid01-..." autocomplete="off">
+    </div>
+
+    <div class="status" id="status"></div>
+
+    <div class="btn-row">
+      <button class="btn" id="btn-test" onclick="testConnection()">Test Connection</button>
+      <button class="btn btn-primary" id="btn-save" onclick="saveAndStart()" disabled>Save &amp; Start</button>
+    </div>
+
+    <div class="security-note">
+      <span style="font-size:16px">&#128274;</span>
+      <span id="security-note">Your Session Key is encrypted and stored locally.</span>
+    </div>
+  </div>
+
+  <script>
+    var detectedPlan = '';
+
+    function openClaude() {
+      if (window.pywebview && window.pywebview.api) {
+        window.pywebview.api.open_claude_ai();
+      }
+    }
+
+    function testConnection() {
+      var key = document.getElementById('session-key').value.trim();
+      if (!key) return;
+      var status = document.getElementById('status');
+      status.className = 'status loading';
+      status.textContent = 'Testing...';
+      document.getElementById('btn-test').disabled = true;
+
+      if (window.pywebview && window.pywebview.api) {
+        window.pywebview.api.test_connection(key).then(function(result) {
+          document.getElementById('btn-test').disabled = false;
+          if (result.success) {
+            detectedPlan = result.plan || '';
+            status.className = 'status success';
+            status.textContent = 'Connected! Plan: ' + detectedPlan;
+            document.getElementById('btn-save').disabled = false;
+          } else {
+            status.className = 'status error';
+            status.textContent = 'Failed: ' + (result.error || 'Unknown error');
+          }
+        });
+      }
+    }
+
+    function saveAndStart() {
+      var key = document.getElementById('session-key').value.trim();
+      if (!key) return;
+      if (window.pywebview && window.pywebview.api) {
+        window.pywebview.api.save_and_start(key);
+      }
+    }
+
+    // Apply i18n strings when loaded
+    function applyStrings(s) {
+      if (s.setup_title) document.getElementById('title').textContent = s.setup_title || 'Claude Tank';
+      if (s.setup_desc) document.getElementById('desc').textContent = s.setup_desc;
+      if (s.setup_step1) document.getElementById('step1').textContent = s.setup_step1;
+      if (s.setup_step2) document.getElementById('step2').textContent = s.setup_step2;
+      if (s.setup_step3) document.getElementById('step3').textContent = s.setup_step3;
+      if (s.setup_step4) document.getElementById('step4').textContent = s.setup_step4;
+      if (s.setup_step5) document.getElementById('step5').textContent = s.setup_step5;
+      if (s.open_claude) document.getElementById('btn-open').textContent = s.open_claude;
+      if (s.session_key) document.getElementById('lbl-key').textContent = s.session_key;
+      if (s.test_connection) document.getElementById('btn-test').textContent = s.test_connection;
+      if (s.save_and_start) document.getElementById('btn-save').textContent = s.save_and_start;
+      if (s.security_note) document.getElementById('security-note').textContent = s.security_note;
+    }
+  </script>
+</body>
+</html>

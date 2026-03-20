@@ -29,3 +29,4 @@ Desktop.ini
 
 # PyInstaller
 *.exe
+.claude/
