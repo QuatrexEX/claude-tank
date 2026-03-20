@@ -1,3 +1,7 @@
+# Project docs (private — not for public sharing)
+CLAUDE.md
+docs/SPEC.md
+
 # Python
 __pycache__/
 *.py[cod]
