@@ -1,0 +1,75 @@
+/* Claude Tank — Base styles */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+:root {
+  --bg-primary: #0a0a0f;
+  --bg-secondary: #12121a;
+  --bg-card: #1a1a2e;
+  --text-primary: #e0e0e0;
+  --text-secondary: #888;
+  --text-muted: #555;
+  --accent: #00ffcc;
+  --accent-alt: #ff00ff;
+  --danger: #ef4444;
+  --warning: #f97316;
+  --caution: #eab308;
+  --safe: #22c55e;
+  --border: #2a2a3e;
+  --radius: 8px;
+  --font-main: 'Segoe UI', system-ui, -apple-system, sans-serif;
+  --font-mono: 'Cascadia Code', 'Consolas', 'Courier New', monospace;
+}
+
+body {
+  font-family: var(--font-main);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+
+.label {
+  font-size: 11px;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.value {
+  font-family: var(--font-mono);
+  font-size: 24px;
+  font-weight: 600;
+}
+
+.value-sm {
+  font-family: var(--font-mono);
+  font-size: 14px;
+}
+
+.text-accent { color: var(--accent); }
+.text-danger { color: var(--danger); }
+.text-warning { color: var(--warning); }
+.text-caution { color: var(--caution); }
+.text-safe { color: var(--safe); }
+.text-muted { color: var(--text-muted); }
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: var(--bg-primary); }
+::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* Transitions */
+.fade-in { animation: fadeIn 0.3s ease-out; }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
