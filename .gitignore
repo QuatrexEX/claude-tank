@@ -2,33 +2,24 @@
 CLAUDE.md
 docs/SPEC.md
 
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-dist/
-build/
-*.spec
-
-# Virtual env
-.venv/
-venv/
+# Rust
+/target
+*.exe
 
 # IDE
 .vscode/
 .idea/
+.claude/
 
 # OS
 Thumbs.db
 Desktop.ini
+*.png
 
-# Env / Secrets
+# Secrets
 .env
 .env.local
 *.pem
 
-# PyInstaller
-*.exe
-.claude/
-*.png
-target/
+# Archive (old versions)
+archive/

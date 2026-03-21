@@ -66,7 +66,7 @@
     .status-msg { font-size: 12px; margin-top: 8px; }
     .status-msg.ok { color: var(--safe); }
     .status-msg.err { color: var(--danger); }
-    #login-view, #dashboard-view { display: none; }
+    #dashboard-view { display: none; }
   </style>
 </head>
 <body class="theme-cyber">
@@ -109,41 +109,57 @@
   <script src="js/gauges.js"></script>
   <script src="js/themes.js"></script>
   <script>
-    const { invoke } = window.__TAURI__.core;
-    const { listen } = window.__TAURI__.event;
-    const { getCurrentWebviewWindow } = window.__TAURI__.webviewWindow;
-
     let config = {};
     let orgId = '';
     let sessionKey = '';
     let pollTimer = null;
 
-    async function init() {
-      config = await invoke('get_config');
-      const session = await invoke('get_session');
+    // Tauri API helpers (safe access)
+    function tauriInvoke(cmd, args) {
+      if (window.__TAURI__ && window.__TAURI__.core) {
+        return window.__TAURI__.core.invoke(cmd, args);
+      }
+      return Promise.resolve(null);
+    }
+    function tauriListen(event, cb) {
+      if (window.__TAURI__ && window.__TAURI__.event) {
+        return window.__TAURI__.event.listen(event, cb);
+      }
+    }
 
-      if (session) {
-        orgId = session;
-        sessionKey = localStorage.getItem('ct_sk') || '';
-        if (sessionKey) {
-          showDashboard();
-          startPolling();
+    async function init() {
+      try {
+        config = (await tauriInvoke('get_config')) || {};
+        var session = await tauriInvoke('get_session');
+
+        if (session) {
+          orgId = session;
+          sessionKey = localStorage.getItem('ct_sk') || '';
+          if (sessionKey) {
+            showDashboard();
+            startPolling();
+          } else {
+            showLogin();
+          }
         } else {
           showLogin();
         }
-      } else {
+
+        tauriListen('do-refresh', function() { fetchUsage(); });
+        tauriListen('do-relogin', function() { showLogin(); });
+        tauriListen('usage-updated', function(e) { renderUsage(e.payload); });
+
+        // Hide popup when clicking outside
+        if (window.__TAURI__ && window.__TAURI__.webviewWindow) {
+          var appWindow = window.__TAURI__.webviewWindow.getCurrentWebviewWindow();
+          appWindow.onFocusChanged(function(ev) {
+            if (!ev.payload) appWindow.hide();
+          });
+        }
+      } catch (e) {
+        console.error('Init error:', e);
         showLogin();
       }
-
-      listen('do-refresh', () => fetchUsage());
-      listen('do-relogin', () => showLogin());
-      listen('usage-updated', (e) => renderUsage(e.payload));
-
-      // Hide popup when clicking outside
-      const appWindow = getCurrentWebviewWindow();
-      appWindow.onFocusChanged(({ payload: focused }) => {
-        if (!focused) appWindow.hide();
-      });
     }
 
     function showLogin() {
@@ -156,7 +172,11 @@
     }
 
     function openClaude() {
-      window.__TAURI__.opener.openUrl('https://claude.ai');
+      if (window.__TAURI__ && window.__TAURI__.opener) {
+        window.__TAURI__.opener.openUrl('https://claude.ai');
+      } else {
+        window.open('https://claude.ai', '_blank');
+      }
     }
 
     async function testConnection() {
@@ -200,7 +220,7 @@
           sessionKey = sk;
           localStorage.setItem('ct_sk', sk);
           localStorage.setItem('ct_extras', JSON.stringify(extras));
-          await invoke('save_login', { orgId: orgId, plan: 'Detecting...' });
+          await tauriInvoke('save_login', { orgId: orgId, plan: 'Detecting...' });
           status.className = 'status-msg ok';
           status.textContent = 'Connected! Org: ' + orgId.substring(0, 8) + '...';
           setTimeout(function() { showDashboard(); startPolling(); }, 800);
@@ -241,7 +261,7 @@
         var raw = await resp.json();
         var data = parseUsage(raw);
         renderUsage(data);
-        await invoke('report_usage', { data: data });
+        await tauriInvoke('report_usage', { data: data });
         document.getElementById('status-dot').className = 'status-dot';
       } catch (e) {
         document.getElementById('status-dot').className = 'status-dot error';
@@ -281,7 +301,22 @@
       document.getElementById('last-updated').textContent = 'Updated: ' + new Date().toLocaleTimeString();
     }
 
-    document.addEventListener('DOMContentLoaded', init);
+    // Debug: log to visible element if console isn't accessible
+    var _debugEl = document.createElement('div');
+    _debugEl.id = 'debug-log';
+    _debugEl.style.cssText = 'position:fixed;bottom:0;left:0;right:0;background:#111;color:#0f0;font-size:10px;font-family:monospace;padding:4px 8px;z-index:99999;max-height:80px;overflow:auto';
+    document.body.appendChild(_debugEl);
+    function dbg(msg) { _debugEl.textContent += msg + ' | '; console.log('[CT]', msg); }
+
+    document.addEventListener('DOMContentLoaded', function() {
+      dbg('DOM ready');
+      dbg('TAURI=' + (typeof window.__TAURI__));
+      if (window.__TAURI__) {
+        dbg('core=' + (typeof window.__TAURI__.core));
+        dbg('event=' + (typeof window.__TAURI__.event));
+      }
+      init().then(function() { dbg('init done'); }).catch(function(e) { dbg('init err: ' + e); });
+    });
   </script>
 </body>
 </html>
