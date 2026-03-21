@@ -31,3 +31,4 @@ Desktop.ini
 *.exe
 .claude/
 *.png
+target/

@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Claude Tank</title>
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/gauges.css">
+  <link rel="stylesheet" href="css/theme-cyber.css">
+  <style>
+    html, body { background: transparent; }
+    body { padding: 0; margin: 0; }
+    .popup {
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+      margin: 8px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.6);
+      min-height: 380px;
+    }
+    .header {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 16px; padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .header h1 { font-size: 16px; color: var(--accent); margin: 0; }
+    .plan-badge {
+      font-size: 10px; padding: 3px 10px;
+      background: var(--accent); color: var(--bg-primary);
+      border-radius: 10px; font-weight: 700;
+    }
+    .section { margin-bottom: 16px; }
+    .login-prompt { text-align: center; padding: 40px 20px; }
+    .login-prompt h2 { font-size: 18px; color: var(--accent); margin-bottom: 8px; }
+    .login-prompt p { font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; }
+    .btn {
+      display: inline-block; padding: 10px 24px;
+      border: 1px solid var(--accent); background: var(--accent);
+      color: var(--bg-primary); font-size: 13px; font-weight: 600;
+      font-family: var(--font-main); border-radius: var(--radius);
+      cursor: pointer; transition: opacity 0.2s;
+    }
+    .btn:hover { opacity: 0.85; }
+    .btn-outline { background: transparent; color: var(--accent); }
+    .input-row {
+      margin: 12px 0;
+    }
+    .input-row input {
+      width: 100%; padding: 8px 12px;
+      background: var(--bg-primary); border: 1px solid var(--border);
+      border-radius: var(--radius); color: var(--text-primary);
+      font-family: var(--font-mono); font-size: 11px; outline: none;
+    }
+    .input-row input:focus { border-color: var(--accent); }
+    .footer {
+      padding-top: 10px; border-top: 1px solid var(--border);
+      font-size: 10px; color: var(--text-muted);
+      display: flex; justify-content: space-between;
+    }
+    .status-dot {
+      display: inline-block; width: 6px; height: 6px;
+      border-radius: 50%; background: var(--safe); margin-right: 4px;
+    }
+    .status-dot.error { background: var(--danger); }
+    .status-msg { font-size: 12px; margin-top: 8px; }
+    .status-msg.ok { color: var(--safe); }
+    .status-msg.err { color: var(--danger); }
+    #login-view, #dashboard-view { display: none; }
+  </style>
+</head>
+<body class="theme-cyber">
+  <div class="popup">
+    <!-- Login View -->
+    <div id="login-view">
+      <div class="login-prompt">
+        <h2>Claude Tank</h2>
+        <p>Claude の使用量をモニターします。<br>
+           claude.ai の Cookie を貼り付けてください。</p>
+        <button class="btn btn-outline" onclick="openClaude()">claude.ai を開く</button>
+        <div class="input-row" style="margin-top:16px">
+          <input id="cookie-input" type="password"
+                 placeholder="Cookie ヘッダー or sessionKey を貼り付け">
+        </div>
+        <button class="btn" onclick="testConnection()">接続テスト</button>
+        <div class="status-msg" id="login-status"></div>
+        <p style="font-size:10px;color:var(--text-muted);margin-top:16px">
+          F12 → Network → 任意のリクエスト → Headers → Cookie の値をコピー
+        </p>
+      </div>
+    </div>
+
+    <!-- Dashboard View -->
+    <div id="dashboard-view">
+      <div class="header">
+        <h1>Claude Tank</h1>
+        <span class="plan-badge" id="plan-name">—</span>
+      </div>
+      <div class="section" id="gauge-5h"></div>
+      <div class="section" id="gauge-7d"></div>
+      <div class="section" id="model-gauges"></div>
+      <div class="footer">
+        <span><span class="status-dot" id="status-dot"></span><span id="last-updated">—</span></span>
+        <span>Quatrex / Claude Tank v1.0</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="js/gauges.js"></script>
+  <script src="js/themes.js"></script>
+  <script>
+    const { invoke } = window.__TAURI__.core;
+    const { listen } = window.__TAURI__.event;
+    const { getCurrentWebviewWindow } = window.__TAURI__.webviewWindow;
+
+    let config = {};
+    let orgId = '';
+    let sessionKey = '';
+    let pollTimer = null;
+
+    async function init() {
+      config = await invoke('get_config');
+      const session = await invoke('get_session');
+
+      if (session) {
+        orgId = session;
+        sessionKey = localStorage.getItem('ct_sk') || '';
+        if (sessionKey) {
+          showDashboard();
+          startPolling();
+        } else {
+          showLogin();
+        }
+      } else {
+        showLogin();
+      }
+
+      listen('do-refresh', () => fetchUsage());
+      listen('do-relogin', () => showLogin());
+      listen('usage-updated', (e) => renderUsage(e.payload));
+
+      // Hide popup when clicking outside
+      const appWindow = getCurrentWebviewWindow();
+      appWindow.onFocusChanged(({ payload: focused }) => {
+        if (!focused) appWindow.hide();
+      });
+    }
+
+    function showLogin() {
+      document.getElementById('login-view').style.display = '';
+      document.getElementById('dashboard-view').style.display = 'none';
+    }
+    function showDashboard() {
+      document.getElementById('login-view').style.display = 'none';
+      document.getElementById('dashboard-view').style.display = '';
+    }
+
+    function openClaude() {
+      window.__TAURI__.opener.openUrl('https://claude.ai');
+    }
+
+    async function testConnection() {
+      var raw = document.getElementById('cookie-input').value.trim();
+      if (!raw) return;
+      var status = document.getElementById('login-status');
+      status.className = 'status-msg';
+      status.textContent = 'Testing...';
+
+      // Parse sessionKey
+      var sk = '';
+      var extras = {};
+      if (raw.startsWith('sk-ant-')) {
+        sk = raw;
+      } else {
+        raw.split(';').forEach(function(p) {
+          var eq = p.indexOf('=');
+          if (eq < 0) return;
+          var n = p.substring(0, eq).trim();
+          var v = p.substring(eq + 1).trim();
+          if (n === 'sessionKey') sk = v;
+          else extras[n] = v;
+        });
+      }
+      if (!sk) { status.className = 'status-msg err'; status.textContent = 'sessionKey が見つかりません'; return; }
+
+      try {
+        // Build cookie header
+        var cookieStr = 'sessionKey=' + sk;
+        for (var k in extras) cookieStr += '; ' + k + '=' + extras[k];
+
+        var resp = await fetch('https://claude.ai/api/organizations', {
+          headers: { 'Accept': 'application/json', 'Cookie': cookieStr },
+          credentials: 'omit',
+        });
+        if (!resp.ok) { status.className = 'status-msg err'; status.textContent = 'HTTP ' + resp.status; return; }
+
+        var orgs = await resp.json();
+        if (Array.isArray(orgs) && orgs.length > 0) {
+          orgId = orgs[0].uuid;
+          sessionKey = sk;
+          localStorage.setItem('ct_sk', sk);
+          localStorage.setItem('ct_extras', JSON.stringify(extras));
+          await invoke('save_login', { orgId: orgId, plan: 'Detecting...' });
+          status.className = 'status-msg ok';
+          status.textContent = 'Connected! Org: ' + orgId.substring(0, 8) + '...';
+          setTimeout(function() { showDashboard(); startPolling(); }, 800);
+        } else {
+          status.className = 'status-msg err';
+          status.textContent = 'No organizations found. Check your cookie.';
+        }
+      } catch (e) {
+        status.className = 'status-msg err';
+        status.textContent = 'Error: ' + e.message;
+      }
+    }
+
+    function startPolling() {
+      fetchUsage();
+      var ms = (config.poll_interval_sec || 180) * 1000;
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = setInterval(fetchUsage, ms);
+    }
+
+    async function fetchUsage() {
+      if (!orgId || !sessionKey) return;
+      var extras = {};
+      try { extras = JSON.parse(localStorage.getItem('ct_extras') || '{}'); } catch(e) {}
+
+      var cookieStr = 'sessionKey=' + sessionKey;
+      for (var k in extras) cookieStr += '; ' + k + '=' + extras[k];
+
+      try {
+        var resp = await fetch('https://claude.ai/api/organizations/' + orgId + '/usage', {
+          headers: { 'Accept': 'application/json', 'Cookie': cookieStr },
+          credentials: 'omit',
+        });
+        if (!resp.ok) {
+          document.getElementById('status-dot').className = 'status-dot error';
+          return;
+        }
+        var raw = await resp.json();
+        var data = parseUsage(raw);
+        renderUsage(data);
+        await invoke('report_usage', { data: data });
+        document.getElementById('status-dot').className = 'status-dot';
+      } catch (e) {
+        document.getElementById('status-dot').className = 'status-dot error';
+      }
+    }
+
+    function parseUsage(raw) {
+      function g(k) { var b = raw[k]; if (!b || typeof b !== 'object') return [0, null]; return [b.utilization || 0, b.resets_at || null]; }
+      var fh = g('five_hour'), sd = g('seven_day'), op = g('seven_day_opus'), so = g('seven_day_sonnet');
+      var ex = raw.extra_usage || {};
+      return {
+        five_hour: fh[0], five_hour_reset: fh[1],
+        seven_day: sd[0], seven_day_reset: sd[1],
+        opus: op[0], opus_reset: op[1],
+        sonnet: so[0], sonnet_reset: so[1],
+        extra_enabled: !!ex.is_enabled,
+        extra_monthly_limit: ex.monthly_limit || null,
+        extra_used: ex.used_credits || null,
+        extra_utilization: ex.utilization || null,
+      };
+    }
+
+    function renderUsage(data) {
+      if (!data) return;
+      var mode = config.gauge_mode || 'remaining';
+      var s = { left: 'left', used: 'used', reset_in: 'Reset in', five_hour: '5-Hour Limit', seven_day: '7-Day Limit' };
+      var g5h = document.getElementById('gauge-5h');
+      if (g5h) renderGauge(g5h, { title: s.five_hour, utilization: data.five_hour, resetAt: data.five_hour_reset, gaugeMode: mode, strings: s });
+      var g7d = document.getElementById('gauge-7d');
+      if (g7d) renderGauge(g7d, { title: s.seven_day, utilization: data.seven_day, resetAt: data.seven_day_reset, gaugeMode: mode, strings: s });
+      var models = document.getElementById('model-gauges');
+      if (models) {
+        models.textContent = '';
+        if (data.opus > 0) { var d = document.createElement('div'); models.appendChild(d); renderGauge(d, { title: 'Opus', utilization: data.opus, resetAt: data.opus_reset, gaugeMode: mode, strings: s }); }
+        if (data.sonnet > 0) { var d2 = document.createElement('div'); d2.style.marginTop = '12px'; models.appendChild(d2); renderGauge(d2, { title: 'Sonnet', utilization: data.sonnet, resetAt: data.sonnet_reset, gaugeMode: mode, strings: s }); }
+      }
+      document.getElementById('last-updated').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+    }
+
+    document.addEventListener('DOMContentLoaded', init);
+  </script>
+</body>
+</html>
