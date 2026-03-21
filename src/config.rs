@@ -10,6 +10,7 @@ fn app_dir() -> PathBuf {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]  // theme/gauge_mode used in future versions
 pub struct AppConfig {
     #[serde(default = "default_theme")]
     pub theme: String,
