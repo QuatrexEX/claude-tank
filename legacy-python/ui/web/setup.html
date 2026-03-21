@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <link rel="stylesheet" href="css/base.css">
+  <link rel="stylesheet" href="css/theme-cyber.css">
+  <style>
+    body { padding: 32px; overflow-y: auto; }
+    .setup-container { max-width: 460px; margin: 0 auto; }
+    h1 { font-size: 22px; margin-bottom: 4px; color: var(--accent); }
+    .subtitle { font-size: 13px; color: var(--text-secondary); margin-bottom: 28px; }
+    .method { margin-bottom: 20px; }
+    .method-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+    }
+    .method-card.highlight {
+      border-color: var(--accent);
+      box-shadow: 0 0 12px rgba(0, 255, 204, 0.08);
+    }
+    .method-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .method-desc {
+      font-size: 12px;
+      color: var(--text-secondary);
+      margin-bottom: 14px;
+      line-height: 1.5;
+    }
+    .badge {
+      font-size: 9px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .badge-recommended {
+      background: var(--accent);
+      color: var(--bg-primary);
+    }
+    .badge-fallback {
+      background: var(--border);
+      color: var(--text-secondary);
+    }
+    .btn {
+      display: inline-block;
+      padding: 10px 20px;
+      border: 1px solid var(--accent);
+      background: transparent;
+      color: var(--accent);
+      font-size: 13px;
+      font-family: var(--font-main);
+      border-radius: var(--radius);
+      cursor: pointer;
+      transition: all 0.2s;
+      width: 100%;
+      text-align: center;
+    }
+    .btn:hover:not(:disabled) { background: var(--accent); color: var(--bg-primary); }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-primary {
+      background: var(--accent);
+      color: var(--bg-primary);
+      font-weight: 600;
+    }
+    .btn-primary:hover:not(:disabled) { opacity: 0.9; }
+    .btn-sm { padding: 8px 16px; font-size: 12px; width: auto; }
+    .input-group { margin: 14px 0; }
+    .input-group label {
+      display: block;
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .input-group input {
+      width: 100%;
+      padding: 10px 14px;
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text-primary);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      outline: none;
+    }
+    .input-group input:focus { border-color: var(--accent); }
+    .status {
+      margin-top: 12px;
+      padding: 10px;
+      border-radius: var(--radius);
+      font-size: 12px;
+      display: none;
+    }
+    .status.success { display: block; background: #22c55e20; color: #22c55e; border: 1px solid #22c55e40; }
+    .status.error { display: block; background: #ef444420; color: #ef4444; border: 1px solid #ef444440; }
+    .status.loading { display: block; background: #eab30820; color: #eab308; border: 1px solid #eab30840; }
+    .status.info { display: block; background: #3b82f620; color: #60a5fa; border: 1px solid #3b82f640; }
+    .security-note {
+      margin-top: 20px;
+      padding: 12px;
+      background: var(--bg-secondary);
+      border-radius: var(--radius);
+      font-size: 11px;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .divider {
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 11px;
+      margin: 16px 0;
+      position: relative;
+    }
+    .divider::before, .divider::after {
+      content: '';
+      position: absolute;
+      top: 50%;
+      width: 40%;
+      height: 1px;
+      background: var(--border);
+    }
+    .divider::before { left: 0; }
+    .divider::after { right: 0; }
+    .collapsible { display: none; }
+    .collapsible.open { display: block; }
+    .toggle-link {
+      color: var(--text-secondary);
+      font-size: 12px;
+      cursor: pointer;
+      text-decoration: underline;
+      background: none;
+      border: none;
+      font-family: var(--font-main);
+      padding: 0;
+    }
+    .toggle-link:hover { color: var(--accent); }
+  </style>
+</head>
+<body class="theme-cyber">
+  <div class="setup-container fade-in">
+    <h1>Claude Tank</h1>
+    <div class="subtitle">Monitor your Claude usage right from the taskbar.</div>
+
+    <!-- Method 1: Auto-detect (Firefox) -->
+    <div class="method">
+      <div class="method-card highlight">
+        <div class="method-title">
+          Auto-Detect
+          <span class="badge badge-recommended">Recommended</span>
+        </div>
+        <div class="method-desc">
+          Automatically detects your Claude session from Firefox.<br>
+          Just be logged in to claude.ai in Firefox.
+        </div>
+        <button class="btn btn-primary" id="btn-auto" onclick="autoDetect()">
+          Detect Automatically
+        </button>
+        <div class="status" id="auto-status"></div>
+      </div>
+    </div>
+
+    <div class="divider">OR</div>
+
+    <!-- Method 2: Login in app -->
+    <div class="method">
+      <div class="method-card">
+        <div class="method-title">
+          Login in App
+          <span class="badge badge-fallback">Chrome / Edge OK</span>
+        </div>
+        <div class="method-desc">
+          Opens claude.ai in this window. Log in normally, then click "Get Cookies".
+        </div>
+        <button class="btn" id="btn-webview-login" onclick="startWebviewLogin()">
+          Open claude.ai Login
+        </button>
+        <div class="status" id="webview-status"></div>
+      </div>
+    </div>
+
+    <div style="text-align: center; margin: 12px 0;">
+      <button class="toggle-link" onclick="toggleManual()">Manual paste (advanced)</button>
+    </div>
+
+    <!-- Method 3: Manual paste (collapsed) -->
+    <div class="method collapsible" id="manual-section">
+      <div class="method-card">
+        <div class="method-title">
+          Manual Paste
+          <span class="badge badge-fallback">Advanced</span>
+        </div>
+        <div class="method-desc">
+          F12 → Network → Cookie header value, or just the sessionKey value.
+        </div>
+        <div class="input-group">
+          <label>Cookie / Session Key</label>
+          <input type="password" id="manual-input"
+                 placeholder="Paste cookie string or sk-ant-sid01-..." autocomplete="off">
+        </div>
+        <button class="btn btn-sm" onclick="testManual()">Test Connection</button>
+        <div class="status" id="manual-status"></div>
+      </div>
+    </div>
+
+    <!-- Save button (appears after successful connection) -->
+    <div id="save-section" style="display:none; margin-top: 20px;">
+      <button class="btn btn-primary" id="btn-save" onclick="saveAndStart()">
+        Save &amp; Start Monitoring
+      </button>
+    </div>
+
+    <div class="security-note">
+      <span style="font-size:16px">&#128274;</span>
+      <span>Your credentials are encrypted (Windows DPAPI) and stored locally only.</span>
+    </div>
+  </div>
+
+  <script>
+    var connected = false;
+
+    function autoDetect() {
+      var status = document.getElementById('auto-status');
+      var btn = document.getElementById('btn-auto');
+      status.className = 'status loading';
+      status.textContent = 'Searching for Firefox cookies...';
+      btn.disabled = true;
+
+      pywebview.api.auto_detect().then(function(r) {
+        btn.disabled = false;
+        if (!r.found) {
+          status.className = 'status info';
+          status.textContent = 'No Firefox session found. Try "Login in App" below.';
+        } else if (r.success) {
+          status.className = 'status success';
+          status.textContent = 'Connected via ' + r.source + '! Plan: ' + r.plan;
+          showSaveButton();
+        } else {
+          status.className = 'status error';
+          status.textContent = 'Found cookies but connection failed: ' + r.error;
+        }
+      });
+    }
+
+    function startWebviewLogin() {
+      var status = document.getElementById('webview-status');
+      status.className = 'status info';
+      status.textContent = 'Opening claude.ai... Log in, then come back and click "Get Cookies" below.';
+
+      // Open claude.ai in default browser for login
+      pywebview.api.open_claude_ai();
+
+      // Replace button with "Get Cookies" after login
+      var btn = document.getElementById('btn-webview-login');
+      btn.textContent = 'I\'ve logged in — Detect Cookies Now';
+      btn.onclick = function() {
+        // Try auto-detect again (user might have used Firefox)
+        autoDetect();
+      };
+    }
+
+    function toggleManual() {
+      var sec = document.getElementById('manual-section');
+      sec.classList.toggle('open');
+    }
+
+    function testManual() {
+      var input = document.getElementById('manual-input').value.trim();
+      if (!input) return;
+      var status = document.getElementById('manual-status');
+      status.className = 'status loading';
+      status.textContent = 'Testing...';
+
+      pywebview.api.test_connection(input).then(function(r) {
+        if (r.success) {
+          status.className = 'status success';
+          status.textContent = 'Connected! Plan: ' + r.plan;
+          showSaveButton();
+        } else {
+          status.className = 'status error';
+          status.textContent = 'Failed: ' + r.error;
+        }
+      });
+    }
+
+    function showSaveButton() {
+      connected = true;
+      document.getElementById('save-section').style.display = '';
+    }
+
+    function saveAndStart() {
+      if (connected) {
+        pywebview.api.save_and_start();
+      }
+    }
+  </script>
+</body>
+</html>
