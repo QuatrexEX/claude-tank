@@ -41,7 +41,7 @@ const CHROME_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 enum AppMessage {
-    LoginSuccess { org_id: String, five_hour: f64, seven_day: f64 },
+    LoginSuccess { org_id: String, plan: String, five_hour: f64, seven_day: f64 },
     UsageUpdate { five_hour: f64, seven_day: f64 },
     Error(String),
 }
@@ -60,6 +60,7 @@ fn main() {
     }
 
     let tray = tray::create_tray(config.clone());
+    let mut current_plan = String::from("Pro");
 
     // Main message loop
     unsafe {
@@ -70,9 +71,10 @@ fn main() {
         while GetMessageW(&mut msg, None, 0, 0).into() {
             while let Ok(app_msg) = rx.try_recv() {
                 match app_msg {
-                    AppMessage::LoginSuccess { org_id, five_hour, seven_day } => {
+                    AppMessage::LoginSuccess { org_id, plan, five_hour, seven_day } => {
+                        current_plan = plan;
                         let _ = AppConfig::save_session(&org_id);
-                        tray::update_tray(&tray, five_hour, seven_day);
+                        tray::update_tray(&tray, five_hour, seven_day, &current_plan);
                         let tx_poll = tx.clone();
                         let interval = config.lock().unwrap().poll_interval_sec;
                         std::thread::spawn(move || {
@@ -80,7 +82,7 @@ fn main() {
                         });
                     }
                     AppMessage::UsageUpdate { five_hour, seven_day } => {
-                        tray::update_tray(&tray, five_hour, seven_day);
+                        tray::update_tray(&tray, five_hour, seven_day, &current_plan);
                     }
                     AppMessage::Error(e) => {
                         let _ = tray.set_tooltip(Some(&format!(
@@ -101,8 +103,9 @@ fn try_resume_session(tx: &mpsc::Sender<AppMessage>) -> bool {
     let client = api::ApiClient::new(sk, extras);
     match client.get_usage(&org_id) {
         Ok(data) => {
+            let plan = client.detect_plan().unwrap_or_else(|_| "Pro".into());
             let _ = tx.send(AppMessage::LoginSuccess {
-                org_id, five_hour: data.five_hour, seven_day: data.seven_day,
+                org_id, plan, five_hour: data.five_hour, seven_day: data.seven_day,
             });
             true
         }
@@ -222,13 +225,14 @@ fn try_detect_login(hwnd: windows::Win32::Foundation::HWND) {
         match client.get_org_id() {
             Ok(org_id) => match client.get_usage(&org_id) {
                 Ok(data) => {
-                    println!("Login success! 5h={:.0}% 7d={:.0}%", data.five_hour, data.seven_day);
+                    let plan = client.detect_plan().unwrap_or_else(|_| "Pro".into());
+                    println!("Login success! Plan={} 5h={:.0}% 7d={:.0}%", plan, data.five_hour, data.seven_day);
                     let _ = AppConfig::save_credentials(&session_key, &extras);
 
                     LOGIN_TX.with(|cell| {
                         if let Some(tx) = cell.borrow().as_ref() {
                             let _ = tx.send(AppMessage::LoginSuccess {
-                                org_id,
+                                org_id, plan,
                                 five_hour: data.five_hour,
                                 seven_day: data.seven_day,
                             });

@@ -1,0 +1,13 @@
+{
+  "app_name": "Claude Tank",
+  "connecting": "Connexion...",
+  "left": "restant",
+  "menu_refresh": "Actualiser maintenant",
+  "menu_interval": "Intervalle de mise à jour",
+  "menu_quit": "Quitter",
+  "login_banner": "Connectez-vous normalement. La connexion sera détectée automatiquement.",
+  "notify_threshold": "L'utilisation a atteint {percent}%",
+  "plan_pro": "Plan Pro",
+  "plan_max": "Plan Max",
+  "plan_team": "Plan Team"
+}

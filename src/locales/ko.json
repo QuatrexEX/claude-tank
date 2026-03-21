@@ -1,0 +1,13 @@
+{
+  "app_name": "Claude Tank",
+  "connecting": "연결 중...",
+  "left": "남음",
+  "menu_refresh": "지금 새로고침",
+  "menu_interval": "업데이트 간격",
+  "menu_quit": "종료",
+  "login_banner": "정상적으로 로그인하세요. 연결이 자동으로 감지됩니다.",
+  "notify_threshold": "사용량이 {percent}%에 도달했습니다",
+  "plan_pro": "Pro 플랜",
+  "plan_max": "Max 플랜",
+  "plan_team": "Team 플랜"
+}
