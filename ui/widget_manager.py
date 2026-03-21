@@ -73,6 +73,7 @@ class WidgetManager:
         self._strings: dict[str, str] = {}
         self._on_login_complete: callable | None = None
         self._api_client: WebViewAPIClient | None = None
+        self._appbar: Any = None
 
     def _load_strings(self) -> dict[str, str]:
         from core import i18n as i18n_mod
@@ -111,18 +112,38 @@ class WidgetManager:
         self._session_win.events.loaded += _on_loaded
 
     def _inject_login_button(self) -> None:
-        """Inject a small button into the claude.ai page for the user
-        to confirm they are logged in."""
-        js = """
+        """Inject UI overlay into the claude.ai page.
+        All content is hardcoded static strings — no untrusted data is rendered."""
+        js = r"""
         (function() {
-            if (document.getElementById('ct-login-btn')) return;
+            if (document.getElementById('ct-overlay')) return;
+
+            // Banner at top
+            var banner = document.createElement('div');
+            banner.id = 'ct-overlay';
+            banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;' +
+                'padding:10px 20px;background:linear-gradient(90deg,#0a0a0f,#1a1a2e);' +
+                'color:#00ffcc;font-size:13px;font-family:system-ui;display:flex;' +
+                'align-items:center;justify-content:space-between;border-bottom:1px solid #00ffcc40';
+            var bannerLeft = document.createElement('span');
+            bannerLeft.textContent = '\ud83d\udfe2 Claude Tank \u2014 Log in to claude.ai, then click the green button at bottom-right';
+            bannerLeft.style.fontWeight = '600';
+            var bannerRight = document.createElement('span');
+            bannerRight.textContent = 'Tip: If Google login fails, use email login instead';
+            bannerRight.style.cssText = 'font-size:11px;color:#888';
+            banner.appendChild(bannerLeft);
+            banner.appendChild(bannerRight);
+            document.body.appendChild(banner);
+            document.body.style.paddingTop = '44px';
+
+            // Floating confirm button
             var btn = document.createElement('div');
             btn.id = 'ct-login-btn';
             btn.style.cssText = 'position:fixed;bottom:20px;right:20px;z-index:99999;' +
-                'padding:12px 24px;background:#00ffcc;color:#000;font-weight:700;' +
-                'font-size:14px;border-radius:8px;cursor:pointer;font-family:system-ui;' +
-                'box-shadow:0 4px 20px rgba(0,255,204,0.3);transition:transform 0.2s';
-            btn.textContent = '\\u2713 I\\'m logged in — Start Claude Tank';
+                'padding:14px 28px;background:#00ffcc;color:#000;font-weight:700;' +
+                'font-size:14px;border-radius:10px;cursor:pointer;font-family:system-ui;' +
+                'box-shadow:0 4px 24px rgba(0,255,204,0.35);transition:all 0.2s';
+            btn.textContent = '\u25b6 Start Claude Tank';
             btn.onmouseenter = function() { btn.style.transform = 'scale(1.05)'; };
             btn.onmouseleave = function() { btn.style.transform = 'scale(1)'; };
             btn.onclick = function() {
@@ -130,15 +151,16 @@ class WidgetManager:
                 btn.style.background = '#eab308';
                 pywebview.api.confirm_login().then(function(r) {
                     if (r.success) {
-                        btn.textContent = '\\u2713 Connected! Plan: ' + r.plan;
+                        btn.textContent = '\u2713 Connected! Plan: ' + r.plan;
                         btn.style.background = '#22c55e';
+                        bannerLeft.textContent = '\u2705 Connected! Starting monitor...';
                     } else {
-                        btn.textContent = '\\u2717 ' + r.error + ' — Try again';
+                        btn.textContent = '\u2717 ' + r.error;
                         btn.style.background = '#ef4444';
                         setTimeout(function() {
-                            btn.textContent = '\\u2713 I\\'m logged in — Start Claude Tank';
+                            btn.textContent = '\u25b6 Start Claude Tank';
                             btn.style.background = '#00ffcc';
-                        }, 3000);
+                        }, 4000);
                     }
                 });
             };
@@ -162,8 +184,22 @@ class WidgetManager:
         """User confirmed they are logged in. Verify and transition."""
         if not self._session_win:
             return {"success": False, "error": "No session window"}
+
+        # Navigate back to claude.ai if we're on a different domain
+        try:
+            current_url = self._session_win.get_current_url() or ""
+            log.info("confirm_login: current URL = %s", current_url)
+            if "claude.ai" not in current_url:
+                log.info("Not on claude.ai, navigating back...")
+                self._session_win.load_url("https://claude.ai")
+                import time
+                time.sleep(3)
+        except Exception as e:
+            log.warning("URL check failed: %s", e)
+
         client = WebViewAPIClient(self._session_win)
         try:
+            log.info("Testing connection...")
             success, org_id, error = client.test_connection()
             if not success:
                 return {"success": False, "error": error}
@@ -197,17 +233,17 @@ class WidgetManager:
         self._load_strings()
         api = _WidgetAPI(self)
 
-        try:
-            user32 = ctypes.windll.user32
-            screen_w = user32.GetSystemMetrics(0)
-            screen_h = user32.GetSystemMetrics(1)
-        except Exception:
-            screen_w, screen_h = 1920, 1080
+        from widget.taskbar_integration import get_taskbar_rect
 
-        widget_w = 320
-        widget_h = 44
-        x = screen_w - widget_w - 200
-        y = screen_h - widget_h - 4
+        tb_left, tb_top, tb_right, tb_bottom = get_taskbar_rect()
+        screen_w = ctypes.windll.user32.GetSystemMetrics(0)
+
+        widget_h = 32
+        widget_w = screen_w  # Full width initially, will be adjusted by AppBar
+
+        # Position just above taskbar
+        x = 0
+        y = max(0, tb_top - widget_h)
 
         self._widget_win = webview.create_window(
             "Claude Tank",
@@ -223,6 +259,38 @@ class WidgetManager:
             js_api=api,
             text_select=False,
         )
+
+        def _on_widget_shown():
+            """Register as AppBar after window is shown."""
+            time.sleep(0.8)
+            try:
+                hwnd = self._get_native_hwnd(self._widget_win)
+                if hwnd:
+                    from widget.taskbar_integration import AppBarWidget, position_above_taskbar
+                    self._appbar = AppBarWidget()
+                    registered = self._appbar.register(hwnd, height=widget_h)
+                    if registered:
+                        log.info("Widget registered as AppBar")
+                    else:
+                        log.info("AppBar failed, positioning above taskbar")
+                        position_above_taskbar(hwnd, 320, widget_h)
+            except Exception as e:
+                log.warning("Taskbar integration error: %s", e)
+
+        self._widget_win.events.shown += lambda: threading.Thread(
+            target=_on_widget_shown, daemon=True).start()
+
+    @staticmethod
+    def _get_native_hwnd(window) -> int:
+        """Get the native Win32 HWND from a pywebview window."""
+        # Find by window title
+        try:
+            hwnd = ctypes.windll.user32.FindWindowW(None, window.title)
+            if hwnd:
+                return hwnd
+        except Exception:
+            pass
+        return 0
 
     def create_hover_panel(self) -> None:
         self._hover_win = webview.create_window(
@@ -363,9 +431,21 @@ class WidgetManager:
             self._session_win.load_url("https://claude.ai")
 
     def start_webview_loop(self) -> None:
-        webview.start(debug=False)
+        # private_mode=False: persist cookies between sessions
+        # storage_path: store WebView2 data (cookies, cache) locally
+        webview.start(
+            debug=False,
+            private_mode=False,
+            storage_path=_WEBVIEW_STORAGE,
+        )
 
     def destroy_all(self) -> None:
+        # Unregister AppBar to restore screen space
+        if self._appbar:
+            try:
+                self._appbar.unregister()
+            except Exception:
+                pass
         for win in (self._widget_win, self._hover_win,
                     self._dashboard_win, self._session_win):
             if win:
