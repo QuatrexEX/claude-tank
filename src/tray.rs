@@ -141,7 +141,8 @@ pub fn create_tray(
                     c.poll_interval_sec = secs;
                     let _ = c.save();
                 }
-                println!("Poll interval set to {}s", secs);
+                #[cfg(debug_assertions)]
+                eprintln!("Poll interval set to {}s", secs);
             }
         }
     });
