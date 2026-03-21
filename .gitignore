@@ -14,7 +14,7 @@ docs/SPEC.md
 # OS
 Thumbs.db
 Desktop.ini
-*.png
+スクリーンショット*.png
 
 # Secrets
 .env

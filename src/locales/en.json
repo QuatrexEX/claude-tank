@@ -50,5 +50,9 @@
   "notify_threshold": "Usage reached {percent}%",
   "notify_expired": "Session Key expired. Please update.",
   "notify_reset": "Usage has been reset.",
-  "notify_error": "Connection error. Retrying..."
+  "notify_error": "Connection error. Retrying...",
+  "tray_connecting": "Connecting...",
+  "tray_left": "left",
+  "tray_error": "Error",
+  "tray_warn_only": "only {v}% left!"
 }
