@@ -174,6 +174,15 @@ impl AppConfig {
         Ok(())
     }
 
+    /// Resolve the effective locale: if "auto" or empty, detect from OS.
+    pub fn effective_locale(&self) -> String {
+        if self.locale.is_empty() || self.locale == "auto" {
+            Self::detect_locale()
+        } else {
+            self.locale.clone()
+        }
+    }
+
     pub fn detect_locale() -> String {
         let mut buf = [0u16; 85];
         let len = unsafe {

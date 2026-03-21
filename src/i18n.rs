@@ -1,6 +1,17 @@
-//! Internationalization — loads locale strings for tray/tooltip/menu.
+//! Internationalization — loads locale strings for tray/tooltip/menu/dashboard.
 
 use std::collections::HashMap;
+
+/// Get the raw JSON string for a locale (used by popup.rs for HTML injection).
+pub fn locale_json(locale: &str) -> String {
+    match locale {
+        "ja" => include_str!("locales/ja.json").to_string(),
+        "de" => include_str!("locales/de.json").to_string(),
+        "ko" => include_str!("locales/ko.json").to_string(),
+        "fr" => include_str!("locales/fr.json").to_string(),
+        _ => String::new(), // English is the default in HTML
+    }
+}
 
 pub struct Strings {
     map: HashMap<String, String>,

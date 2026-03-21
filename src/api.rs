@@ -57,13 +57,17 @@ impl ApiClient {
             .ok_or_else(|| "No organizations found".to_string())
     }
 
-    /// Detect plan type from organization data
+    /// Detect plan type (makes an extra API call)
     pub fn detect_plan(&self) -> Result<String, String> {
         let body = self.get_json("/organizations")?;
         let org = body.as_array()
             .and_then(|arr| arr.first())
             .ok_or("No organizations")?;
+        Self::detect_plan_from_org(org)
+    }
 
+    /// Detect plan from already-fetched organization JSON (avoids extra API call)
+    pub fn detect_plan_from_org(org: &serde_json::Value) -> Result<String, String> {
         // Check capabilities, billing, or active_flags
         let billing = org.get("billing");
         if let Some(b) = billing {
