@@ -22,10 +22,14 @@ from core.plan_detector import detect_plan
 from tray.tray_app import TrayApp
 from ui.widget_manager import WidgetManager
 
+_log_file = str(app_dir() / "debug.log")
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-    handlers=[logging.StreamHandler()],
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(_log_file, mode="w", encoding="utf-8"),
+    ],
 )
 log = logging.getLogger("claude-tank")
 

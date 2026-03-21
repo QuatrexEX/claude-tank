@@ -30,3 +30,4 @@ Desktop.ini
 # PyInstaller
 *.exe
 .claude/
+*.png
