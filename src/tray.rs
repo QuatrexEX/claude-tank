@@ -2,7 +2,7 @@ use crate::config::AppConfig;
 use std::sync::{Arc, Mutex};
 use tray_icon::{
     menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu, CheckMenuItem},
-    Icon, TrayIcon, TrayIconBuilder,
+    Icon, TrayIcon, TrayIconBuilder, TrayIconEvent,
 };
 
 // Icon layout — balanced outer margin, tight gap between bars
@@ -78,16 +78,19 @@ fn generate_icon(five_hour_remaining: f64, seven_day_remaining: f64) -> Icon {
     Icon::from_rgba(rgba, ICON_SIZE, ICON_SIZE).expect("Failed to create icon")
 }
 
-pub fn create_tray(config: Arc<Mutex<AppConfig>>) -> TrayIcon {
-    let quit = MenuItem::new("Quit Claude Tank", true, None);
-    let refresh = MenuItem::new("Refresh Now", true, None);
-    let about = MenuItem::new("Quatrex / Claude Tank v1.0", false, None);
+pub fn create_tray(
+    config: Arc<Mutex<AppConfig>>,
+    app_tx: std::sync::mpsc::Sender<crate::AppMessage>,
+    strings: &crate::i18n::Strings,
+) -> TrayIcon {
+    let quit = MenuItem::new(strings.get("menu_quit"), true, None);
+    let refresh = MenuItem::new(strings.get("menu_refresh"), true, None);
+    let about = MenuItem::new("Quatrex / Claude Tank v1.3", false, None);
 
-    // Polling interval submenu
-    let poll_1m = CheckMenuItem::new("1 min", true, false, None);
-    let poll_3m = CheckMenuItem::new("3 min (default)", true, true, None);
-    let poll_5m = CheckMenuItem::new("5 min", true, false, None);
-    let poll_menu = Submenu::with_items("Update Interval", true, &[&poll_1m, &poll_3m, &poll_5m])
+    let poll_1m = CheckMenuItem::new(strings.get("menu_interval_1m"), true, false, None);
+    let poll_3m = CheckMenuItem::new(strings.get("menu_interval_3m"), true, true, None);
+    let poll_5m = CheckMenuItem::new(strings.get("menu_interval_5m"), true, false, None);
+    let poll_menu = Submenu::with_items(strings.get("menu_interval"), true, &[&poll_1m, &poll_3m, &poll_5m])
         .expect("Failed to create poll submenu");
 
     let quit_id = quit.id().clone();
@@ -104,14 +107,27 @@ pub fn create_tray(config: Arc<Mutex<AppConfig>>) -> TrayIcon {
     ]).expect("Failed to create menu");
 
     let tray = TrayIconBuilder::new()
-        .with_tooltip("Claude Tank\nConnecting...")
+        .with_tooltip(&format!("Claude Tank\n{}", strings.get("tray_connecting")))
         .with_icon(generate_icon(100.0, 100.0))
         .with_menu(Box::new(menu))
+        .with_menu_on_left_click(false) // Left click = popup, right click = menu
         .build()
         .expect("Failed to create tray icon");
 
-    // Menu event handler — can't move CheckMenuItems to thread,
-    // so we just save config. CheckMenuItem checked state is visual only.
+    // Tray left-click → open popup
+    let tx_click = app_tx;
+    std::thread::spawn(move || {
+        while let Ok(event) = TrayIconEvent::receiver().recv() {
+            if let TrayIconEvent::Click { button: tray_icon::MouseButton::Left, button_state: tray_icon::MouseButtonState::Up, position, .. } = event {
+                let _ = tx_click.send(crate::AppMessage::TrayClicked {
+                    x: position.x as i32,
+                    y: position.y as i32,
+                });
+            }
+        }
+    });
+
+    // Menu event handler
     let config_for_menu = config;
     std::thread::spawn(move || {
         while let Ok(event) = MenuEvent::receiver().recv() {
@@ -133,11 +149,15 @@ pub fn create_tray(config: Arc<Mutex<AppConfig>>) -> TrayIcon {
     tray
 }
 
-pub fn update_tray(tray: &TrayIcon, five_hour_util: f64, seven_day_util: f64, plan: &str) {
+pub fn update_tray(
+    tray: &TrayIcon, five_hour_util: f64, seven_day_util: f64,
+    plan: &str, strings: &crate::i18n::Strings,
+) {
     let r5 = 100.0 - five_hour_util;
     let r7 = 100.0 - seven_day_util;
+    let left = strings.get("tray_left");
     let _ = tray.set_icon(Some(generate_icon(r5, r7)));
     let _ = tray.set_tooltip(Some(&format!(
-        "Claude Tank — {}\n5h: {:.0}% left | 7d: {:.0}% left", plan, r5, r7
+        "Claude Tank — {}\n5h: {:.0}% {} | 7d: {:.0}% {}", plan, r5, left, r7, left
     )));
 }

@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#0a0a0f;--bg2:#12121a;--card:#1a1a2e80;--cyan:#00ffcc;--cyan40:#00ffcc40;--text:#e0e0e0;--muted:#555;--border:#2a2a3e;--font:Consolas,'Courier New',monospace}
+body{font-family:var(--font);background:var(--bg);color:var(--text);overflow:hidden;user-select:none}
+.tabs{display:flex;border-bottom:1px solid var(--border)}
+.tab{flex:1;padding:6px;text-align:center;font-size:11px;cursor:pointer;color:var(--muted);border-bottom:2px solid transparent;transition:.2s}
+.tab.active{color:var(--cyan);border-bottom-color:var(--cyan)}
+.tab:hover{color:var(--text)}
+.panel{display:none;padding:10px 16px;height:calc(100vh - 56px);overflow-y:auto}
+.panel.active{display:block}
+.header{display:flex;justify-content:space-between;align-items:center;padding:6px 16px;border-bottom:1px solid var(--border)}
+.header h1{font-size:13px;color:var(--cyan);text-shadow:0 0 8px var(--cyan40)}
+.plan-badge{font-size:9px;padding:2px 8px;background:var(--cyan);color:var(--bg);border-radius:10px;font-weight:700}
+/* Tank gauges */
+.tanks{display:flex;gap:12px;justify-content:center;padding:8px 0}
+.tank-box{text-align:center;flex:1}
+.tank-label{font-size:16px;color:var(--cyan);text-transform:uppercase;letter-spacing:.1em;margin-bottom:4px;font-weight:700;text-shadow:0 0 8px var(--cyan40)}
+.tank-wrap{position:relative;margin:0 auto;width:110px}
+.tank-neck{width:32px;height:10px;margin:0 auto;background:#2a2a3e;border:1px solid var(--border);border-bottom:none;border-radius:5px 5px 0 0}
+.tank-body{width:110px;height:160px;border:2px solid var(--border);border-radius:8px;overflow:hidden;position:relative;background:#08080c}
+.tank-fill{position:absolute;bottom:0;left:0;right:0;transition:height .8s ease;border-radius:0 0 4px 4px}
+.tank-empty{position:absolute;top:0;left:0;right:0;bottom:0;background:repeating-linear-gradient(0deg,transparent,transparent 3px,#0d0d14 3px,#0d0d14 4px)}
+.tank-pct{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:700;text-shadow:0 1px 4px rgba(0,0,0,.9),0 0 10px rgba(0,0,0,.5);z-index:1}
+.tank-reset{font-size:9px;color:var(--muted);margin-top:3px}
+.tank-glow{box-shadow:inset 0 0 12px var(--glow-color)}
+/* Footer */
+.footer{padding:4px 16px;border-top:1px solid var(--border);font-size:8px;color:var(--muted);display:flex;justify-content:space-between}
+/* Settings */
+.setting{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)}
+.setting:last-child{border-bottom:none}
+.setting-label{font-size:13px}
+.setting-desc{font-size:11px;color:#999;margin-top:2px}
+select{background:var(--bg);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:4px 8px;font-family:var(--font);font-size:12px}
+select:focus{border-color:var(--cyan);outline:none}
+.toggle{position:relative;width:36px;height:20px;cursor:pointer}
+.toggle input{display:none}
+.toggle-track{position:absolute;inset:0;background:var(--border);border-radius:10px;transition:.2s}
+.toggle input:checked+.toggle-track{background:var(--cyan)}
+.toggle-thumb{position:absolute;top:2px;left:2px;width:16px;height:16px;background:#fff;border-radius:50%;transition:.2s}
+.toggle input:checked~.toggle-thumb{left:18px}
+.btn{padding:6px 14px;border:1px solid var(--border);background:transparent;color:var(--text);border-radius:4px;cursor:pointer;font-family:var(--font);font-size:12px;transition:.2s}
+.btn:hover{border-color:var(--cyan);color:var(--cyan)}
+.btn-danger{border-color:#ef4444;color:#ef4444}
+.btn-danger:hover{background:#ef444420}
+</style></head>
+<body>
+<div class="header">
+  <h1>◈ CLAUDE TANK</h1>
+  <span class="plan-badge" id="plan">—</span>
+</div>
+<div class="tabs">
+  <div class="tab active" onclick="showTab('dashboard')" id="tab-dash"></div>
+  <div class="tab" onclick="showTab('settings')" id="tab-set"></div>
+</div>
+
+<div class="panel active" id="p-dashboard">
+  <div class="tanks">
+    <div class="tank-box">
+      <div class="tank-label">5h</div>
+      <div class="tank-wrap">
+        <div class="tank-neck"></div>
+        <div class="tank-body" id="tank-5h">
+          <div class="tank-empty"></div>
+          <div class="tank-fill" id="fill-5h"></div>
+          <div class="tank-pct" id="pct-5h">—</div>
+        </div>
+      </div>
+      <div class="tank-reset" id="reset-5h"></div>
+    </div>
+    <div class="tank-box">
+      <div class="tank-label">7d</div>
+      <div class="tank-wrap">
+        <div class="tank-neck"></div>
+        <div class="tank-body" id="tank-7d">
+          <div class="tank-empty"></div>
+          <div class="tank-fill" id="fill-7d"></div>
+          <div class="tank-pct" id="pct-7d">—</div>
+        </div>
+      </div>
+      <div class="tank-reset" id="reset-7d"></div>
+    </div>
+  </div>
+</div>
+
+<div class="panel" id="p-settings">
+  <div class="setting">
+    <div><div class="setting-label" id="lbl-interval"></div>
+    <div class="setting-desc" id="desc-interval"></div></div>
+    <select id="s-interval" onchange="saveSetting('poll_interval_sec',this.value)">
+      <option value="60">1 min</option><option value="180" selected>3 min</option><option value="300">5 min</option>
+    </select>
+  </div>
+  <div class="setting">
+    <div><div class="setting-label" id="lbl-threshold-5h"></div>
+    <div class="setting-desc" id="desc-threshold-5h"></div></div>
+    <select id="s-threshold-5h" onchange="saveSetting('threshold_5h',this.value)">
+      <option value="40">40%</option><option value="30">30%</option><option value="20" selected>20%</option><option value="10">10%</option><option value="0">Off</option>
+    </select>
+  </div>
+  <div class="setting">
+    <div><div class="setting-label" id="lbl-threshold-7d"></div>
+    <div class="setting-desc" id="desc-threshold-7d"></div></div>
+    <select id="s-threshold-7d" onchange="saveSetting('threshold_7d',this.value)">
+      <option value="40">40%</option><option value="30">30%</option><option value="20" selected>20%</option><option value="10">10%</option><option value="0">Off</option>
+    </select>
+  </div>
+  <div class="setting">
+    <div><div class="setting-label" id="lbl-autostart"></div>
+    <div class="setting-desc" id="desc-autostart"></div></div>
+    <label class="toggle"><input type="checkbox" id="s-autostart" onchange="saveSetting('auto_start',this.checked)"><div class="toggle-track"></div><div class="toggle-thumb"></div></label>
+  </div>
+  <div class="setting">
+    <div><div class="setting-label" id="lbl-session"></div></div>
+    <button class="btn" onclick="relogin()" id="btn-relogin"></button>
+  </div>
+  <div class="setting">
+    <div><div class="setting-label" id="lbl-clear"></div></div>
+    <button class="btn btn-danger" onclick="clearData()" id="btn-clear"></button>
+  </div>
+</div>
+
+<div class="footer">
+  <span id="updated">—</span>
+  <span>Quatrex / Claude Tank v1.3</span>
+</div>
+
+<script>
+// i18n strings (set from Rust)
+var L = {
+  tab_dashboard: 'Dashboard', tab_settings: 'Settings',
+  interval: 'Update Interval', interval_desc: 'How often to check usage',
+  threshold_5h: '5h Alert Threshold', threshold_5h_desc: '5h remaining drops below',
+  threshold_7d: '7d Alert Threshold', threshold_7d_desc: '7d remaining drops below',
+  autostart: 'Start with Windows', autostart_desc: 'Launch on login',
+  session: 'Session', relogin: 'Re-login', clear: 'Clear All Data', clear_btn: 'Clear',
+  reset_in: 'Reset in', updated: 'Updated', left: 'left'
+};
+
+function applyLocale(strings) {
+  if (!strings) return;
+  for (var k in strings) L[k] = strings[k];
+  document.getElementById('tab-dash').textContent = L.tab_dashboard;
+  document.getElementById('tab-set').textContent = L.tab_settings;
+  document.getElementById('lbl-interval').textContent = L.interval;
+  document.getElementById('desc-interval').textContent = L.interval_desc;
+  document.getElementById('lbl-threshold-5h').textContent = L.threshold_5h;
+  document.getElementById('desc-threshold-5h').textContent = L.threshold_5h_desc;
+  document.getElementById('lbl-threshold-7d').textContent = L.threshold_7d;
+  document.getElementById('desc-threshold-7d').textContent = L.threshold_7d_desc;
+  document.getElementById('lbl-autostart').textContent = L.autostart;
+  document.getElementById('desc-autostart').textContent = L.autostart_desc;
+  document.getElementById('lbl-session').textContent = L.session;
+  document.getElementById('btn-relogin').textContent = L.relogin;
+  document.getElementById('lbl-clear').textContent = L.clear;
+  document.getElementById('btn-clear').textContent = L.clear_btn;
+}
+applyLocale(L); // Apply defaults
+
+function showTab(name) {
+  document.querySelectorAll('.tab').forEach(function(t,i){t.classList.toggle('active',i===(name==='dashboard'?0:1))});
+  document.getElementById('p-dashboard').classList.toggle('active',name==='dashboard');
+  document.getElementById('p-settings').classList.toggle('active',name==='settings');
+}
+
+function tankColor(rem) {
+  if(rem>50) return '#00ffcc';
+  if(rem>20) return '#ffd700';
+  if(rem>5) return '#ff00ff';
+  return '#ff2244';
+}
+
+function updateDashboard(data) {
+  if (!data) return;
+  renderTank('5h', data.five_hour, data.five_hour_reset);
+  renderTank('7d', data.seven_day, data.seven_day_reset);
+  document.getElementById('updated').textContent = L.updated + ': ' + new Date().toLocaleTimeString();
+}
+
+function renderTank(id, util, resetAt) {
+  var rem = 100 - util;
+  var color = tankColor(rem);
+  var fill = document.getElementById('fill-' + id);
+  var pct = document.getElementById('pct-' + id);
+  var body = document.getElementById('tank-' + id);
+  fill.style.height = rem + '%';
+  fill.style.background = 'linear-gradient(0deg, ' + color + 'cc, ' + color + '88)';
+  fill.style.boxShadow = '0 0 10px ' + color + '40';
+  pct.textContent = Math.round(rem) + '%';
+  pct.style.color = color;
+  body.style.borderColor = color + '60';
+  // Reset countdown
+  var el = document.getElementById('reset-' + id);
+  if (resetAt) {
+    var d = new Date(resetAt) - new Date();
+    if (d > 0) {
+      var h = Math.floor(d/3600000); var m = Math.floor((d%3600000)/60000);
+      el.textContent = '\u23F1 ' + L.reset_in + ' ' + (h>=24 ? Math.floor(h/24)+'d '+(h%24)+'h' : h+'h '+m+'m');
+    } else { el.textContent = ''; }
+  } else { el.textContent = ''; }
+}
+
+function loadConfig(cfg) {
+  if (!cfg) return;
+  document.getElementById('s-interval').value = cfg.poll_interval_sec || 180;
+  document.getElementById('s-threshold-5h').value = cfg.threshold_5h != null ? cfg.threshold_5h : 20;
+  document.getElementById('s-threshold-7d').value = cfg.threshold_7d != null ? cfg.threshold_7d : 20;
+  document.getElementById('s-autostart').checked = cfg.auto_start || false;
+}
+function saveSetting(k,v) { window.ipc.postMessage(JSON.stringify({type:'setting',key:k,value:v})); }
+function relogin() { window.ipc.postMessage(JSON.stringify({type:'relogin'})); }
+function clearData() { window.ipc.postMessage(JSON.stringify({type:'clear'})); }
+</script>
+</body></html>

@@ -9,8 +9,12 @@
 
 mod api;
 mod config;
+mod crypto;
+mod i18n;
+mod popup;
 mod tray;
 
+use api::UsageData;
 use config::AppConfig;
 use std::cell::RefCell;
 use std::sync::mpsc;
@@ -42,13 +46,23 @@ const CHROME_USER_AGENT: &str =
 
 enum AppMessage {
     LoginSuccess { org_id: String, plan: String, five_hour: f64, seven_day: f64 },
-    UsageUpdate { five_hour: f64, seven_day: f64 },
+    UsageUpdate(UsageData),
     Error(String),
+    TrayClicked { x: i32, y: i32 },
 }
 
 fn main() {
     let config = Arc::new(Mutex::new(AppConfig::load()));
     let (tx, rx) = mpsc::channel::<AppMessage>();
+
+    // Detect locale
+    let cfg_snap = config.lock().unwrap().clone();
+    let locale = if cfg_snap.locale.is_empty() || cfg_snap.locale == "auto" {
+        AppConfig::detect_locale()
+    } else {
+        cfg_snap.locale.clone()
+    };
+    let strings = Arc::new(i18n::Strings::load(&locale));
 
     let has_session = try_resume_session(&tx);
 
@@ -59,13 +73,16 @@ fn main() {
         });
     }
 
-    let tray = tray::create_tray(config.clone());
+    let tray = tray::create_tray(config.clone(), tx.clone(), &strings);
     let mut current_plan = String::from("Pro");
+    let mut last_data: Option<UsageData> = None;
+    let popup = popup::create_popup(); // Pre-create, hidden
+    let mut notified_threshold = false;
 
     // Main message loop
     unsafe {
         use windows::Win32::UI::WindowsAndMessaging::*;
-        let _timer = SetTimer(None, 1, 1000, None);
+        let _timer = SetTimer(None, 1, 500, None);
         let mut msg = MSG::default();
 
         while GetMessageW(&mut msg, None, 0, 0).into() {
@@ -73,24 +90,108 @@ fn main() {
                 match app_msg {
                     AppMessage::LoginSuccess { org_id, plan, five_hour, seven_day } => {
                         current_plan = plan;
+                        let data = UsageData { five_hour, seven_day, ..Default::default() };
                         let _ = AppConfig::save_session(&org_id);
-                        tray::update_tray(&tray, five_hour, seven_day, &current_plan);
+                        tray::update_tray(&tray, five_hour, seven_day, &current_plan, &strings);
+                        last_data = Some(data);
+                        notified_threshold = false;
                         let tx_poll = tx.clone();
                         let interval = config.lock().unwrap().poll_interval_sec;
                         std::thread::spawn(move || {
                             poll_loop(tx_poll, org_id, interval);
                         });
                     }
-                    AppMessage::UsageUpdate { five_hour, seven_day } => {
-                        tray::update_tray(&tray, five_hour, seven_day, &current_plan);
+                    AppMessage::UsageUpdate(data) => {
+                        tray::update_tray(&tray, data.five_hour, data.seven_day, &current_plan, &strings);
+
+                        // Threshold notification (remaining mode, 5h and 7d independent)
+                        let cfg = config.lock().unwrap();
+                        let r5 = 100.0 - data.five_hour;
+                        let r7 = 100.0 - data.seven_day;
+                        let t5 = cfg.threshold_5h as f64;
+                        let t7 = cfg.threshold_7d as f64;
+                        drop(cfg);
+
+                        let alert_5h = t5 > 0.0 && r5 <= t5;
+                        let alert_7d = t7 > 0.0 && r7 <= t7;
+                        if !notified_threshold && (alert_5h || alert_7d) {
+                            let mut warn = format!("Claude Tank — {}", current_plan);
+                            if alert_5h { warn += &format!("\n\u{26A0} 5h: {:.0}% left!", r5); }
+                            if alert_7d { warn += &format!("\n\u{26A0} 7d: {:.0}% left!", r7); }
+                            let _ = tray.set_tooltip(Some(&warn));
+                            notified_threshold = true;
+                        }
+                        if !alert_5h && !alert_7d {
+                            notified_threshold = false;
+                        }
+
+                        // Push to popup
+                        if let Some(ref p) = popup {
+                            popup::push_data(p, &data, &current_plan);
+                        }
+                        last_data = Some(data);
                     }
                     AppMessage::Error(e) => {
                         let _ = tray.set_tooltip(Some(&format!(
                             "Claude Tank\nError: {}", &e[..e.len().min(50)]
                         )));
                     }
+                    AppMessage::TrayClicked { x, y } => {
+                        if let Some(ref p) = popup {
+                            popup::toggle_popup(p, x, y);
+                            if let Some(ref data) = last_data {
+                                popup::push_data(p, data, &current_plan);
+                            }
+                        }
+                    }
                 }
             }
+
+            // Check popup settings messages
+            let popup_msgs: Vec<_> = popup.as_ref()
+                .map(|p| p.rx.try_iter().collect())
+                .unwrap_or_default();
+            for pmsg in popup_msgs {
+                    match pmsg {
+                        popup::PopupMessage::Setting { key, value } => {
+                            if let Ok(mut c) = config.lock() {
+                                match key.as_str() {
+                                    "poll_interval_sec" => {
+                                        c.poll_interval_sec = value.parse().unwrap_or(180);
+                                    }
+                                    "threshold_5h" => {
+                                        c.threshold_5h = value.parse().unwrap_or(20);
+                                    }
+                                    "threshold_7d" => {
+                                        c.threshold_7d = value.parse().unwrap_or(20);
+                                    }
+                                    "auto_start" => {
+                                        let enabled = value == "true";
+                                        c.auto_start = enabled;
+                                        let _ = AppConfig::set_auto_start(enabled);
+                                    }
+                                    _ => {}
+                                }
+                                let _ = c.save();
+                            }
+                        }
+                        popup::PopupMessage::Relogin => {
+                            if let Some(ref p) = popup {
+                                let _ = ShowWindow(p.hwnd, SW_HIDE);
+                            }
+                            let tx_login = tx.clone();
+                            std::thread::spawn(move || { open_login_webview(tx_login); });
+                        }
+                        popup::PopupMessage::Clear => {
+                            let dir = dirs::config_dir().unwrap().join("Quatrex").join("claude-tank");
+                            let _ = std::fs::remove_file(dir.join("credentials.enc"));
+                            let _ = std::fs::remove_file(dir.join("credentials.json"));
+                            let _ = std::fs::remove_file(dir.join("session.json"));
+                            std::process::exit(0);
+                        }
+                    }
+                }
+
             let _ = TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
@@ -119,11 +220,7 @@ fn poll_loop(tx: mpsc::Sender<AppMessage>, org_id: String, interval_sec: u32) {
     loop {
         std::thread::sleep(Duration::from_secs(interval_sec as u64));
         match client.get_usage(&org_id) {
-            Ok(data) => {
-                let _ = tx.send(AppMessage::UsageUpdate {
-                    five_hour: data.five_hour, seven_day: data.seven_day,
-                });
-            }
+            Ok(data) => { let _ = tx.send(AppMessage::UsageUpdate(data)); }
             Err(e) => { let _ = tx.send(AppMessage::Error(e)); }
         }
     }
