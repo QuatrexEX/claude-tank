@@ -57,10 +57,56 @@ impl ApiClient {
             .ok_or_else(|| "No organizations found".to_string())
     }
 
+    /// Detect plan type from organization data
+    pub fn detect_plan(&self) -> Result<String, String> {
+        let body = self.get_json("/organizations")?;
+        let org = body.as_array()
+            .and_then(|arr| arr.first())
+            .ok_or("No organizations")?;
+
+        // Check capabilities, billing, or active_flags
+        let billing = org.get("billing");
+        if let Some(b) = billing {
+            let plan = b.get("plan_type")
+                .or_else(|| b.get("plan"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if !plan.is_empty() {
+                return Ok(format_plan_name(plan));
+            }
+        }
+
+        // Check active_flags or capabilities
+        if let Some(caps) = org.get("capabilities").and_then(|v| v.as_array()) {
+            let names: Vec<&str> = caps.iter().filter_map(|v| v.as_str()).collect();
+            if names.iter().any(|c| c.contains("enterprise")) { return Ok("Enterprise".into()); }
+            if names.iter().any(|c| c.contains("team")) { return Ok("Team".into()); }
+        }
+
+        // Check rate_limit or settings for plan hints
+        if let Some(settings) = org.get("settings") {
+            if settings.get("claude_pro_active").and_then(|v| v.as_bool()).unwrap_or(false) {
+                return Ok("Pro".into());
+            }
+        }
+
+        Ok("Pro".into()) // Default assumption
+    }
+
     pub fn get_usage(&self, org_id: &str) -> Result<UsageData, String> {
         let raw = self.get_json(&format!("/organizations/{}/usage", org_id))?;
         Ok(parse_usage(&raw))
     }
+}
+
+fn format_plan_name(raw: &str) -> String {
+    let lower = raw.to_lowercase();
+    if lower.contains("enterprise") { "Enterprise".into() }
+    else if lower.contains("team") { "Team".into() }
+    else if lower.contains("max") && lower.contains("20") { "Max (20x)".into() }
+    else if lower.contains("max") { "Max".into() }
+    else if lower.contains("pro") { "Pro".into() }
+    else { raw.to_string() }
 }
 
 fn parse_usage(raw: &serde_json::Value) -> UsageData {
