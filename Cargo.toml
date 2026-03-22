@@ -14,6 +14,7 @@ dirs = "6"
 raw-window-handle = "0.6"
 ureq = { version = "3", features = ["json"] }
 open = "5"
+mslnk = "0.1"
 
 [dependencies.windows]
 version = "0.61"
