@@ -16,6 +16,9 @@ Thumbs.db
 Desktop.ini
 スクリーンショット*.png
 
+# Keep docs images
+!docs/img/*.png
+
 # Secrets
 .env
 .env.local

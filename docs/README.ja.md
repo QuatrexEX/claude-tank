@@ -1,5 +1,7 @@
 # Claude Tank
 
+<img src="img/icon.png" alt="Claude Tank Icon" width="64">
+
 > Claude プラン使用量モニター for Windows
 
 **🌐 言語:** [English](../README.md) | 日本語 | [Deutsch](README.de.md) | [한국어](README.ko.md) | [Français](README.fr.md)
