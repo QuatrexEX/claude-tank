@@ -134,44 +134,54 @@ impl AppConfig {
         None
     }
 
-    // ── Auto-start (Windows Registry) ──
+    // ── Auto-start (Startup folder shortcut) ──
+
+    fn startup_folder() -> Option<PathBuf> {
+        dirs::data_dir().map(|d| {
+            d.join("Microsoft").join("Windows").join("Start Menu")
+                .join("Programs").join("Startup")
+        })
+    }
+
+    fn shortcut_path() -> Option<PathBuf> {
+        Self::startup_folder().map(|d| d.join("Claude Tank.lnk"))
+    }
 
     pub fn set_auto_start(enabled: bool) -> Result<(), String> {
+        let lnk_path = Self::shortcut_path().ok_or("Could not find Startup folder")?;
+
+        if enabled {
+            let exe_path = std::env::current_exe()
+                .map_err(|e| e.to_string())?;
+
+            let sl = mslnk::ShellLink::new(exe_path)
+                .map_err(|e| format!("Failed to create shortcut: {}", e))?;
+            sl.create_lnk(&lnk_path)
+                .map_err(|e| format!("Failed to write shortcut: {}", e))?;
+
+            // Clean up old registry entry if it exists
+            Self::remove_registry_autostart();
+        } else {
+            let _ = fs::remove_file(&lnk_path);
+            Self::remove_registry_autostart();
+        }
+        Ok(())
+    }
+
+    /// Remove legacy registry auto-start entry (migration from older versions)
+    fn remove_registry_autostart() {
         use windows::Win32::System::Registry::*;
         use windows::core::*;
-
-        let exe_path = std::env::current_exe()
-            .map_err(|e| e.to_string())?
-            .to_string_lossy()
-            .to_string();
-
         unsafe {
             let mut key = HKEY::default();
             let subkey = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
-
             let result = RegOpenKeyExW(HKEY_CURRENT_USER, subkey, None, KEY_SET_VALUE, &mut key);
-            if result.is_err() {
-                return Err("RegOpenKeyEx failed".into());
-            }
-
-            if enabled {
-                let value: Vec<u16> = exe_path.encode_utf16().chain(std::iter::once(0)).collect();
-                let name = HSTRING::from(REGISTRY_APP_NAME);
-                let result = RegSetValueExW(
-                    key, &name, None, REG_SZ,
-                    Some(std::slice::from_raw_parts(value.as_ptr() as *const u8, value.len() * 2)),
-                );
-                if result.is_err() {
-                    let _ = RegCloseKey(key);
-                    return Err("RegSetValueEx failed".into());
-                }
-            } else {
+            if result.is_ok() {
                 let name = HSTRING::from(REGISTRY_APP_NAME);
                 let _ = RegDeleteValueW(key, &name);
+                let _ = RegCloseKey(key);
             }
-            let _ = RegCloseKey(key);
         }
-        Ok(())
     }
 
     /// Resolve the effective locale: if "auto" or empty, detect from OS.
