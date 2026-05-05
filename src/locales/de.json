@@ -2,6 +2,8 @@
   "app_name": "Claude Tank",
   "connecting": "Verbinde...",
   "left": "übrig",
+  "tray_left": "übrig",
+  "reset_in": "Reset in",
   "menu_refresh": "Jetzt aktualisieren",
   "menu_interval": "Aktualisierungsintervall",
   "menu_quit": "Beenden",

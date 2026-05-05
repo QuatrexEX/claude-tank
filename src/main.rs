@@ -11,7 +11,9 @@ mod api;
 mod config;
 mod crypto;
 mod i18n;
+mod panic_hook;
 mod popup;
+mod time_util;
 mod tray;
 mod win_util;
 
@@ -46,13 +48,14 @@ const CHROME_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 pub enum AppMessage {
-    LoginSuccess { org_id: String, plan: String, five_hour: f64, seven_day: f64 },
+    LoginSuccess { org_id: String, plan: String, data: UsageData },
     UsageUpdate(UsageData),
     Error(String),
     TrayClicked { x: i32, y: i32 },
 }
 
 fn main() {
+    panic_hook::install();
     let config = Arc::new(Mutex::new(AppConfig::load()));
     let (tx, rx) = mpsc::channel::<AppMessage>();
 
@@ -109,11 +112,10 @@ fn handle_app_message(
     notified_threshold: &mut bool,
 ) {
     match msg {
-        AppMessage::LoginSuccess { org_id, plan, five_hour, seven_day } => {
+        AppMessage::LoginSuccess { org_id, plan, data } => {
             *current_plan = plan;
-            let data = UsageData { five_hour, seven_day, ..Default::default() };
             let _ = AppConfig::save_session(&org_id);
-            tray::update_tray(tray, five_hour, seven_day, current_plan, strings);
+            tray::update_tray(tray, &data, current_plan, strings);
             *last_data = Some(data);
             *notified_threshold = false;
             let tx_poll = tx.clone();
@@ -121,7 +123,7 @@ fn handle_app_message(
             std::thread::spawn(move || { poll_loop(tx_poll, org_id, cfg); });
         }
         AppMessage::UsageUpdate(data) => {
-            tray::update_tray(tray, data.five_hour, data.seven_day, current_plan, strings);
+            tray::update_tray(tray, &data, current_plan, strings);
             check_threshold(tray, &data, config, current_plan, notified_threshold);
             if let Some(ref p) = popup {
                 popup::push_data(p, &data, current_plan);
@@ -220,9 +222,7 @@ fn try_resume_session(tx: &mpsc::Sender<AppMessage>) -> bool {
     match client.get_usage(&org_id) {
         Ok(data) => {
             let plan = client.detect_plan().unwrap_or_else(|_| "Pro".into());
-            let _ = tx.send(AppMessage::LoginSuccess {
-                org_id, plan, five_hour: data.five_hour, seven_day: data.seven_day,
-            });
+            let _ = tx.send(AppMessage::LoginSuccess { org_id, plan, data });
             true
         }
         Err(_) => false,
@@ -330,23 +330,20 @@ fn try_detect_login(hwnd: windows::Win32::Foundation::HWND) {
                     let _ = AppConfig::save_credentials(&session_key, &extras);
                     LOGIN_TX.with(|cell| {
                         if let Some(tx) = cell.borrow().as_ref() {
-                            let _ = tx.send(AppMessage::LoginSuccess {
-                                org_id, plan,
-                                five_hour: data.five_hour, seven_day: data.seven_day,
-                            });
+                            let _ = tx.send(AppMessage::LoginSuccess { org_id, plan, data });
                         }
                     });
                     unsafe { let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd); }
                 }
-                Err(e) => {
+                Err(_e) => {
                     #[cfg(debug_assertions)]
-                    eprintln!("Usage fetch failed: {}. Retrying...", e);
+                    eprintln!("Usage fetch failed: {}. Retrying...", _e);
                     restart_cookie_timer(hwnd);
                 }
             },
-            Err(e) => {
+            Err(_e) => {
                 #[cfg(debug_assertions)]
-                eprintln!("Org fetch failed: {}. Retrying...", e);
+                eprintln!("Org fetch failed: {}. Retrying...", _e);
                 restart_cookie_timer(hwnd);
             }
         }

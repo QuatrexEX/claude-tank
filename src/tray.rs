@@ -151,14 +151,26 @@ pub fn create_tray(
 }
 
 pub fn update_tray(
-    tray: &TrayIcon, five_hour_util: f64, seven_day_util: f64,
+    tray: &TrayIcon, data: &crate::api::UsageData,
     plan: &str, strings: &crate::i18n::Strings,
 ) {
-    let r5 = 100.0 - five_hour_util;
-    let r7 = 100.0 - seven_day_util;
+    let r5 = 100.0 - data.five_hour;
+    let r7 = 100.0 - data.seven_day;
     let left = strings.get("tray_left");
+    let reset_label = strings.get("reset_in");
     let _ = tray.set_icon(Some(generate_icon(r5, r7)));
+
+    let r5_reset = data.five_hour_reset.as_deref()
+        .and_then(crate::time_util::time_until)
+        .map(|t| format!(" · {} {}", reset_label, t))
+        .unwrap_or_default();
+    let r7_reset = data.seven_day_reset.as_deref()
+        .and_then(crate::time_util::time_until)
+        .map(|t| format!(" · {} {}", reset_label, t))
+        .unwrap_or_default();
+
     let _ = tray.set_tooltip(Some(&format!(
-        "Claude Tank — {}\n5h: {:.0}% {} | 7d: {:.0}% {}", plan, r5, left, r7, left
+        "Claude Tank — {}\n5h: {:.0}% {}{}\n7d: {:.0}% {}{}",
+        plan, r5, left, r5_reset, r7, left, r7_reset
     )));
 }
