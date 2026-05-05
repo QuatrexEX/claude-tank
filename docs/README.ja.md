@@ -24,6 +24,11 @@
 - **多言語対応** — 英語、日本語、ドイツ語、韓国語、フランス語（OS 言語を自動検出）
 - **軽量** — exe 約 2MB、メモリ約 20MB、インストーラー不要
 
+## 動作要件
+
+- Windows 10 (1903+) または Windows 11
+- [Microsoft Edge WebView2 ランタイム](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) — Windows 11 では通常プリインストール済みですが、必ずあるとは限りません。起動に失敗する場合はリンク先の **Evergreen Standalone Installer** をインストールしてください。
+
 ## 使い方
 
 1. [Releases](https://github.com/QuatrexEX/claude-tank/releases) から `claude-tank.exe` をダウンロード

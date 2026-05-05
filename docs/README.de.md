@@ -24,6 +24,11 @@ Keine überraschenden Rate-Limits mehr — sehen Sie Ihre 5-Stunden- und 7-Tage-
 - **Mehrsprachig** — Englisch, Japanisch, Deutsch, Koreanisch, Französisch (automatische OS-Erkennung)
 - **Klein** — ~2MB exe, ~20MB RAM, kein Installer nötig
 
+## Voraussetzungen
+
+- Windows 10 (1903+) oder Windows 11
+- [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/en-us/microsoft-edge/webview2/) — auf Windows 11 normalerweise vorinstalliert, aber nicht garantiert. Falls die App nicht startet, installieren Sie den **Evergreen Standalone Installer** über den Link.
+
 ## Schnellstart
 
 1. `claude-tank.exe` von [Releases](https://github.com/QuatrexEX/claude-tank/releases) herunterladen
