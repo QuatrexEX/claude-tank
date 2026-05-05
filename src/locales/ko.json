@@ -2,6 +2,8 @@
   "app_name": "Claude Tank",
   "connecting": "연결 중...",
   "left": "남음",
+  "tray_left": "남음",
+  "reset_in": "재설정까지",
   "menu_refresh": "지금 새로고침",
   "menu_interval": "업데이트 간격",
   "menu_quit": "종료",
