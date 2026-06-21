@@ -85,7 +85,10 @@ pub fn create_tray(
 ) -> TrayIcon {
     let quit = MenuItem::new(strings.get("menu_quit"), true, None);
     let refresh = MenuItem::new(strings.get("menu_refresh"), true, None);
-    let about = MenuItem::new("Quatrex / Claude Tank v1.3", false, None);
+    let about = MenuItem::new(
+        concat!("Quatrex / Claude Tank v", env!("CARGO_PKG_VERSION")),
+        false, None,
+    );
 
     let poll_1m = CheckMenuItem::new(strings.get("menu_interval_1m"), true, false, None);
     let poll_3m = CheckMenuItem::new(strings.get("menu_interval_3m"), true, true, None);
@@ -160,14 +163,14 @@ pub fn update_tray(
     let reset_label = strings.get("reset_in");
     let _ = tray.set_icon(Some(generate_icon(r5, r7)));
 
-    let r5_reset = data.five_hour_reset.as_deref()
-        .and_then(crate::time_util::time_until)
-        .map(|t| format!(" · {} {}", reset_label, t))
-        .unwrap_or_default();
-    let r7_reset = data.seven_day_reset.as_deref()
-        .and_then(crate::time_util::time_until)
-        .map(|t| format!(" · {} {}", reset_label, t))
-        .unwrap_or_default();
+    let fmt_reset = |iso: &Option<String>| {
+        iso.as_deref()
+            .and_then(crate::time_util::time_until)
+            .map(|t| format!(" · {} {}", reset_label, t))
+            .unwrap_or_default()
+    };
+    let r5_reset = fmt_reset(&data.five_hour_reset);
+    let r7_reset = fmt_reset(&data.seven_day_reset);
 
     let _ = tray.set_tooltip(Some(&format!(
         "Claude Tank — {}\n5h: {:.0}% {}{}\n7d: {:.0}% {}{}",

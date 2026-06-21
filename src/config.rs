@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 const REGISTRY_APP_NAME: &str = "ClaudeTank";
 
-fn app_dir() -> PathBuf {
+pub(crate) fn app_dir() -> PathBuf {
     let base = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
     let dir = base.join("Quatrex").join("claude-tank");
     fs::create_dir_all(&dir).ok();
@@ -15,10 +15,6 @@ fn app_dir() -> PathBuf {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppConfig {
-    #[serde(default = "default_theme")]
-    pub theme: String,
-    #[serde(default = "default_gauge_mode")]
-    pub gauge_mode: String,
     #[serde(default = "default_poll_interval")]
     pub poll_interval_sec: u32,
     #[serde(default)]
@@ -31,16 +27,12 @@ pub struct AppConfig {
     pub auto_start: bool,
 }
 
-fn default_theme() -> String { "cyber".into() }
-fn default_gauge_mode() -> String { "remaining".into() }
 fn default_poll_interval() -> u32 { 180 }
 fn default_threshold() -> u32 { 20 } // Alert when remaining drops below 20%
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            theme: default_theme(),
-            gauge_mode: default_gauge_mode(),
             poll_interval_sec: default_poll_interval(),
             locale: String::new(),
             threshold_5h: default_threshold(),

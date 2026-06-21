@@ -20,12 +20,17 @@ mod win_util;
 use api::UsageData;
 use config::AppConfig;
 use std::cell::RefCell;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const TIMER_ID_COOKIE_POLL: usize = 42;
 const COOKIE_POLL_MS: u32 = 2000;
+
+/// Bumped on every successful login. A poll_loop thread exits once it sees a
+/// newer generation, so re-login never leaves a stale loop polling in parallel.
+static POLL_GENERATION: AtomicUsize = AtomicUsize::new(0);
 
 const BANNER_JS: &str = r#"
 (function() {
@@ -118,9 +123,11 @@ fn handle_app_message(
             tray::update_tray(tray, &data, current_plan, strings);
             *last_data = Some(data);
             *notified_threshold = false;
+            // Supersede any previous poll loop so re-login doesn't double-poll.
+            let generation = POLL_GENERATION.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
             let tx_poll = tx.clone();
             let cfg = config.clone();
-            std::thread::spawn(move || { poll_loop(tx_poll, org_id, cfg); });
+            std::thread::spawn(move || { poll_loop(tx_poll, org_id, cfg, generation); });
         }
         AppMessage::UsageUpdate(data) => {
             tray::update_tray(tray, &data, current_plan, strings);
@@ -131,9 +138,10 @@ fn handle_app_message(
             *last_data = Some(data);
         }
         AppMessage::Error(e) => {
-            let _ = tray.set_tooltip(Some(&format!(
-                "Claude Tank\nError: {}", &e[..e.len().min(50)]
-            )));
+            // Truncate on a char boundary — byte slicing can split a multibyte
+            // sequence (localized OS / server errors) and panic.
+            let short: String = e.chars().take(50).collect();
+            let _ = tray.set_tooltip(Some(&format!("Claude Tank\nError: {}", short)));
         }
         AppMessage::TrayClicked { x, y } => {
             if let Some(ref p) = popup {
@@ -206,7 +214,7 @@ fn handle_popup_message(
             std::thread::spawn(move || { open_login_webview(tx_login); });
         }
         popup::PopupMessage::Clear => {
-            let dir = dirs::config_dir().unwrap().join("Quatrex").join("claude-tank");
+            let dir = config::app_dir();
             let _ = std::fs::remove_file(dir.join("credentials.enc"));
             let _ = std::fs::remove_file(dir.join("credentials.json"));
             let _ = std::fs::remove_file(dir.join("session.json"));
@@ -229,13 +237,21 @@ fn try_resume_session(tx: &mpsc::Sender<AppMessage>) -> bool {
     }
 }
 
-/// Polling loop — reads interval from config each cycle (supports runtime changes)
-fn poll_loop(tx: mpsc::Sender<AppMessage>, org_id: String, config: Arc<Mutex<AppConfig>>) {
+/// Polling loop — reads interval from config each cycle (supports runtime changes).
+/// Exits once a newer login bumps `POLL_GENERATION` past this loop's generation.
+fn poll_loop(
+    tx: mpsc::Sender<AppMessage>,
+    org_id: String,
+    config: Arc<Mutex<AppConfig>>,
+    generation: usize,
+) {
     let (sk, extras) = match AppConfig::load_credentials() { Some(c) => c, None => return };
     let client = api::ApiClient::new(sk, extras);
     loop {
+        if POLL_GENERATION.load(Ordering::SeqCst) != generation { return; }
         let interval = config.lock().map(|c| c.poll_interval_sec).unwrap_or(180);
         std::thread::sleep(Duration::from_secs(interval as u64));
+        if POLL_GENERATION.load(Ordering::SeqCst) != generation { return; }
         match client.get_usage(&org_id) {
             Ok(data) => { let _ = tx.send(AppMessage::UsageUpdate(data)); }
             Err(e) => { let _ = tx.send(AppMessage::Error(e)); }
