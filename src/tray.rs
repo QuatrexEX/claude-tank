@@ -155,25 +155,27 @@ pub fn create_tray(
 
 pub fn update_tray(
     tray: &TrayIcon, data: &crate::api::UsageData,
-    plan: &str, strings: &crate::i18n::Strings,
+    plan: &str, _strings: &crate::i18n::Strings,
 ) {
     let r5 = 100.0 - data.five_hour;
     let r7 = 100.0 - data.seven_day;
-    let left = strings.get("tray_left");
-    let reset_label = strings.get("reset_in");
     let _ = tray.set_icon(Some(generate_icon(r5, r7)));
 
+    // Windows caps the tray tooltip (szTip) at 64 UTF-16 chars — tray-icon does
+    // not bump the notify-icon version — so the text must stay terse or the
+    // 7-day line gets cut off. Drop the "left"/"reset in" labels and show the
+    // reset countdown compactly in parentheses (parens render in every font).
     let fmt_reset = |iso: &Option<String>| {
         iso.as_deref()
             .and_then(crate::time_util::time_until)
-            .map(|t| format!(" · {} {}", reset_label, t))
+            .map(|t| format!(" ({})", t))
             .unwrap_or_default()
     };
     let r5_reset = fmt_reset(&data.five_hour_reset);
     let r7_reset = fmt_reset(&data.seven_day_reset);
 
     let _ = tray.set_tooltip(Some(&format!(
-        "Claude Tank — {}\n5h: {:.0}% {}{}\n7d: {:.0}% {}{}",
-        plan, r5, left, r5_reset, r7, left, r7_reset
+        "Claude Tank \u{2014} {}\n5h: {:.0}%{}\n7d: {:.0}%{}",
+        plan, r5, r5_reset, r7, r7_reset
     )));
 }
