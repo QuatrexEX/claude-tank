@@ -8,9 +8,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod api;
+mod cc;
 mod config;
 mod crypto;
 mod i18n;
+mod notify;
 mod panic_hook;
 mod popup;
 mod time_util;
@@ -53,7 +55,7 @@ const CHROME_USER_AGENT: &str =
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 
 pub enum AppMessage {
-    LoginSuccess { org_id: String, plan: String, data: UsageData },
+    LoginSuccess { org_id: String, plan: String, data: UsageData, auth: api::AuthKind },
     UsageUpdate(UsageData),
     Error(String),
     TrayClicked { x: i32, y: i32 },
@@ -67,11 +69,21 @@ fn main() {
     let locale = config.lock().unwrap().effective_locale();
     let strings = Arc::new(i18n::Strings::load(&locale));
 
-    let has_session = try_resume_session(&tx);
-    if !has_session {
-        let tx_login = tx.clone();
-        std::thread::spawn(move || { open_login_webview(tx_login); });
+    // The WebView2 runtime is needed for the login window and dashboard (the
+    // tray gauge itself works without it). Warn once if it is missing.
+    if !win_util::webview2_installed() {
+        win_util::prompt_webview2_install(strings.get("webview2_missing"));
     }
+    notify::init();
+
+    // Resolve saved auth off the main thread so the tray appears instantly, even
+    // on a slow connection. Falls through to the login window if nothing resumes.
+    let tx_boot = tx.clone();
+    std::thread::spawn(move || {
+        if !try_resume_session(&tx_boot) {
+            open_login_webview(tx_boot);
+        }
+    });
 
     let tray = tray::create_tray(config.clone(), tx.clone(), &strings);
     let mut current_plan = String::from("Pro");
@@ -117,9 +129,12 @@ fn handle_app_message(
     notified_threshold: &mut bool,
 ) {
     match msg {
-        AppMessage::LoginSuccess { org_id, plan, data } => {
+        AppMessage::LoginSuccess { org_id, plan, data, auth } => {
             *current_plan = plan;
-            let _ = AppConfig::save_session(&org_id);
+            // Claude Code auth carries no org_id and needs no session file.
+            if !org_id.is_empty() {
+                let _ = AppConfig::save_session(&org_id);
+            }
             tray::update_tray(tray, &data, current_plan, strings);
             *last_data = Some(data);
             *notified_threshold = false;
@@ -127,11 +142,11 @@ fn handle_app_message(
             let generation = POLL_GENERATION.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
             let tx_poll = tx.clone();
             let cfg = config.clone();
-            std::thread::spawn(move || { poll_loop(tx_poll, org_id, cfg, generation); });
+            std::thread::spawn(move || { poll_loop(tx_poll, org_id, cfg, generation, auth); });
         }
         AppMessage::UsageUpdate(data) => {
             tray::update_tray(tray, &data, current_plan, strings);
-            check_threshold(tray, &data, config, current_plan, notified_threshold);
+            check_threshold(tray, &data, config, current_plan, notified_threshold, strings);
             if let Some(ref p) = popup {
                 popup::push_data(p, &data, current_plan);
             }
@@ -160,6 +175,7 @@ fn check_threshold(
     config: &Arc<Mutex<AppConfig>>,
     plan: &str,
     notified: &mut bool,
+    strings: &i18n::Strings,
 ) {
     let cfg = config.lock().unwrap();
     let r5 = 100.0 - data.five_hour;
@@ -168,13 +184,18 @@ fn check_threshold(
     let t7 = cfg.threshold_7d as f64;
     drop(cfg);
 
+    let left = strings.get("tray_left");
     let alert_5h = t5 > 0.0 && r5 <= t5;
     let alert_7d = t7 > 0.0 && r7 <= t7;
     if !*notified && (alert_5h || alert_7d) {
-        let mut warn = format!("Claude Tank \u{2014} {}", plan);
-        if alert_5h { warn += &format!("\n\u{26A0} 5h: {:.0}% left!", r5); }
-        if alert_7d { warn += &format!("\n\u{26A0} 7d: {:.0}% left!", r7); }
-        let _ = tray.set_tooltip(Some(&warn));
+        let title = format!("Claude Tank \u{2014} {}", plan);
+        let mut lines: Vec<String> = Vec::new();
+        if alert_5h { lines.push(format!("5h: {:.0}% {}", r5, left)); }
+        if alert_7d { lines.push(format!("7d: {:.0}% {}", r7, left)); }
+        let body = lines.join("\n");
+        // Tooltip persists on hover; the balloon grabs attention once per crossing.
+        let _ = tray.set_tooltip(Some(&format!("{}\n{}", title, body)));
+        notify::show(&title, &body);
         *notified = true;
     }
     if !alert_5h && !alert_7d {
@@ -223,35 +244,72 @@ fn handle_popup_message(
     }
 }
 
+/// Resume without a login window, preferring Claude Code's OAuth token and
+/// falling back to a saved claude.ai session cookie. Returns false if neither
+/// works, so the caller opens the WebView2 login.
 fn try_resume_session(tx: &mpsc::Sender<AppMessage>) -> bool {
-    let org_id = match AppConfig::load_session() { Some(id) => id, None => return false };
-    let (sk, extras) = match AppConfig::load_credentials() { Some(c) => c, None => return false };
-    let client = api::ApiClient::new(sk, extras);
-    match client.get_usage(&org_id) {
-        Ok(data) => {
-            let plan = client.detect_plan().unwrap_or_else(|_| "Pro".into());
-            let _ = tx.send(AppMessage::LoginSuccess { org_id, plan, data });
-            true
+    // 1. Claude Code OAuth — works if the user already runs Claude Code.
+    if let Some(creds) = cc::load() {
+        let client = api::ApiClient::claude_code();
+        match client.get_usage("") {
+            Ok(data) => {
+                let plan = api::plan_from_creds(&creds);
+                #[cfg(debug_assertions)]
+                eprintln!("Resumed via Claude Code. Plan={} 5h={:.0}% 7d={:.0}%",
+                    plan, data.five_hour, data.seven_day);
+                let _ = tx.send(AppMessage::LoginSuccess {
+                    org_id: String::new(), plan, data, auth: api::AuthKind::ClaudeCode,
+                });
+                return true;
+            }
+            #[cfg(debug_assertions)]
+            Err(_e) => eprintln!("Claude Code auth failed: {}. Trying saved session...", _e),
+            #[cfg(not(debug_assertions))]
+            Err(_) => {}
         }
-        Err(_) => false,
     }
+    // 2. Saved claude.ai session cookie from a previous WebView2 login.
+    if let (Some(org_id), Some((sk, extras))) =
+        (AppConfig::load_session(), AppConfig::load_credentials())
+    {
+        let client = api::ApiClient::session(sk, extras);
+        if let Ok(data) = client.get_usage(&org_id) {
+            let plan = client.detect_plan().unwrap_or_else(|_| "Pro".into());
+            let _ = tx.send(AppMessage::LoginSuccess {
+                org_id, plan, data, auth: api::AuthKind::Session,
+            });
+            return true;
+        }
+    }
+    false
 }
 
-/// Polling loop — reads interval from config each cycle (supports runtime changes).
-/// Exits once a newer login bumps `POLL_GENERATION` past this loop's generation.
+/// Polling loop. Rebuilds the client for its auth source, then re-reads the
+/// interval every second so a runtime interval change (or a superseding login
+/// that bumps `POLL_GENERATION`) both take effect promptly.
 fn poll_loop(
     tx: mpsc::Sender<AppMessage>,
     org_id: String,
     config: Arc<Mutex<AppConfig>>,
     generation: usize,
+    auth: api::AuthKind,
 ) {
-    let (sk, extras) = match AppConfig::load_credentials() { Some(c) => c, None => return };
-    let client = api::ApiClient::new(sk, extras);
+    let client = match auth {
+        api::AuthKind::ClaudeCode => api::ApiClient::claude_code(),
+        api::AuthKind::Session => match AppConfig::load_credentials() {
+            Some((sk, extras)) => api::ApiClient::session(sk, extras),
+            None => return,
+        },
+    };
     loop {
-        if POLL_GENERATION.load(Ordering::SeqCst) != generation { return; }
-        let interval = config.lock().map(|c| c.poll_interval_sec).unwrap_or(180);
-        std::thread::sleep(Duration::from_secs(interval as u64));
-        if POLL_GENERATION.load(Ordering::SeqCst) != generation { return; }
+        let mut elapsed = 0u32;
+        loop {
+            if POLL_GENERATION.load(Ordering::SeqCst) != generation { return; }
+            let interval = config.lock().map(|c| c.poll_interval_sec).unwrap_or(180);
+            if elapsed >= interval { break; }
+            std::thread::sleep(Duration::from_secs(1));
+            elapsed += 1;
+        }
         match client.get_usage(&org_id) {
             Ok(data) => { let _ = tx.send(AppMessage::UsageUpdate(data)); }
             Err(e) => { let _ = tx.send(AppMessage::Error(e)); }
@@ -335,7 +393,7 @@ fn try_detect_login(hwnd: windows::Win32::Foundation::HWND) {
         }
 
         let extras = std::collections::HashMap::new();
-        let client = api::ApiClient::new(session_key.clone(), extras.clone());
+        let client = api::ApiClient::session(session_key.clone(), extras.clone());
 
         match client.get_org_id() {
             Ok(org_id) => match client.get_usage(&org_id) {
@@ -346,7 +404,9 @@ fn try_detect_login(hwnd: windows::Win32::Foundation::HWND) {
                     let _ = AppConfig::save_credentials(&session_key, &extras);
                     LOGIN_TX.with(|cell| {
                         if let Some(tx) = cell.borrow().as_ref() {
-                            let _ = tx.send(AppMessage::LoginSuccess { org_id, plan, data });
+                            let _ = tx.send(AppMessage::LoginSuccess {
+                                org_id, plan, data, auth: api::AuthKind::Session,
+                            });
                         }
                     });
                     unsafe { let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd); }

@@ -1,5 +1,6 @@
 {
   "app_name": "Claude Tank",
+  "webview2_missing": "ダッシュボードとログイン画面の表示に必要な Microsoft Edge WebView2 ランタイムが見つかりません。\n\n今すぐダウンロードページを開きますか？",
   "setup_title": "セットアップ",
   "setup_desc": "Claude の使用量をタスクバーに常時表示します。",
   "setup_step1": "下のボタンで claude.ai にログインしてください",

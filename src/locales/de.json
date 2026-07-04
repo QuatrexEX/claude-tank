@@ -1,5 +1,6 @@
 {
   "app_name": "Claude Tank",
+  "webview2_missing": "Die Microsoft Edge WebView2-Runtime wird für das Dashboard und den Anmeldebildschirm benötigt, wurde aber nicht gefunden.\n\nDownloadseite jetzt öffnen?",
   "connecting": "Verbinde...",
   "left": "übrig",
   "tray_left": "übrig",

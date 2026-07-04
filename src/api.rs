@@ -1,7 +1,12 @@
 use std::collections::HashMap;
+use std::time::Duration;
 
-const BASE_URL: &str = "https://claude.ai/api";
+const CLAUDE_BASE: &str = "https://claude.ai/api";
+const ANTHROPIC_BASE: &str = "https://api.anthropic.com/api";
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0";
+const CC_OAUTH_BETA: &str = "oauth-2025-04-20";
+const ANTHROPIC_VERSION: &str = "2023-06-01";
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Default)]
 pub struct UsageData {
@@ -13,41 +18,92 @@ pub struct UsageData {
     pub sonnet: f64,
 }
 
+/// Which credential source an [`ApiClient`] authenticates with.
+pub enum AuthSource {
+    /// Claude Code OAuth token, read fresh from disk on each request so a
+    /// background refresh by Claude Code is picked up automatically.
+    ClaudeCode,
+    /// claude.ai session cookie captured by the WebView2 login.
+    Session {
+        session_key: String,
+        extra_cookies: HashMap<String, String>,
+    },
+}
+
+/// Copy descriptor of the active auth source. Lets the poll loop rebuild a
+/// client without carrying secrets through the message channel.
+#[derive(Clone, Copy, PartialEq)]
+pub enum AuthKind {
+    ClaudeCode,
+    Session,
+}
+
 pub struct ApiClient {
-    session_key: String,
-    extra_cookies: HashMap<String, String>,
+    agent: ureq::Agent,
+    auth: AuthSource,
 }
 
 impl ApiClient {
-    pub fn new(session_key: String, extra_cookies: HashMap<String, String>) -> Self {
-        Self { session_key, extra_cookies }
+    pub fn new(auth: AuthSource) -> Self {
+        // ureq's Config defaults to the Rustls provider even with the rustls
+        // feature off, so the provider must be set explicitly to native-tls
+        // (Windows Schannel) or the first HTTPS request panics. PlatformVerifier
+        // trusts the OS certificate store; the default (bundled WebPki roots)
+        // fails Schannel chain building on Windows.
+        let tls = ureq::tls::TlsConfig::builder()
+            .provider(ureq::tls::TlsProvider::NativeTls)
+            .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+            .build();
+        // A global timeout keeps a stalled connection from blocking a poll
+        // cycle (or startup resume) indefinitely.
+        let config = ureq::Agent::config_builder()
+            .tls_config(tls)
+            .timeout_global(Some(REQUEST_TIMEOUT))
+            .build();
+        Self { agent: ureq::Agent::new_with_config(config), auth }
     }
 
-    fn cookie_header(&self) -> String {
-        let mut parts = vec![format!("sessionKey={}", self.session_key)];
-        for (k, v) in &self.extra_cookies {
+    pub fn session(session_key: String, extra_cookies: HashMap<String, String>) -> Self {
+        Self::new(AuthSource::Session { session_key, extra_cookies })
+    }
+
+    pub fn claude_code() -> Self {
+        Self::new(AuthSource::ClaudeCode)
+    }
+
+    fn cookie_header(session_key: &str, extras: &HashMap<String, String>) -> String {
+        let mut parts = vec![format!("sessionKey={}", session_key)];
+        for (k, v) in extras {
             parts.push(format!("{}={}", k, v));
         }
         parts.join("; ")
     }
 
-    fn get_json(&self, path: &str) -> Result<serde_json::Value, String> {
-        let url = format!("{}{}", BASE_URL, path);
-        let mut resp = ureq::get(&url)
+    fn get_json(&self, url: &str) -> Result<serde_json::Value, String> {
+        let req = self.agent.get(url)
             .header("Accept", "application/json")
-            .header("Cookie", &self.cookie_header())
-            .header("User-Agent", USER_AGENT)
-            .header("anthropic-client-platform", "web_claude_ai")
-            .call()
-            .map_err(|e| format!("Request failed: {}", e))?;
+            .header("User-Agent", USER_AGENT);
 
+        let req = match &self.auth {
+            AuthSource::Session { session_key, extra_cookies } => req
+                .header("Cookie", &Self::cookie_header(session_key, extra_cookies))
+                .header("anthropic-client-platform", "web_claude_ai"),
+            AuthSource::ClaudeCode => {
+                let creds = crate::cc::load().ok_or("Claude Code credentials not found")?;
+                req.header("Authorization", &format!("Bearer {}", creds.access_token))
+                    .header("anthropic-beta", CC_OAUTH_BETA)
+                    .header("anthropic-version", ANTHROPIC_VERSION)
+            }
+        };
+
+        let mut resp = req.call().map_err(|e| format!("Request failed: {}", e))?;
         resp.body_mut()
             .read_json()
             .map_err(|e| format!("JSON parse error: {}", e))
     }
 
     pub fn get_org_id(&self) -> Result<String, String> {
-        let body = self.get_json("/organizations")?;
+        let body = self.get_json(&format!("{}/organizations", CLAUDE_BASE))?;
         let orgs = body.as_array().ok_or("No organizations found")?;
         pick_org(orgs)
             .and_then(|org| org.get("uuid"))
@@ -56,9 +112,9 @@ impl ApiClient {
             .ok_or_else(|| "No organizations found".to_string())
     }
 
-    /// Detect plan type (makes an extra API call)
+    /// Detect plan type (makes an extra API call). Session auth only.
     pub fn detect_plan(&self) -> Result<String, String> {
-        let body = self.get_json("/organizations")?;
+        let body = self.get_json(&format!("{}/organizations", CLAUDE_BASE))?;
         let orgs = body.as_array().ok_or("No organizations")?;
         let org = pick_org(orgs).ok_or("No organizations")?;
         Self::detect_plan_from_org(org)
@@ -102,9 +158,20 @@ impl ApiClient {
     }
 
     pub fn get_usage(&self, org_id: &str) -> Result<UsageData, String> {
-        let raw = self.get_json(&format!("/organizations/{}/usage", org_id))?;
+        let url = match &self.auth {
+            AuthSource::ClaudeCode => format!("{}/oauth/usage", ANTHROPIC_BASE),
+            AuthSource::Session { .. } => format!("{}/organizations/{}/usage", CLAUDE_BASE, org_id),
+        };
+        let raw = self.get_json(&url)?;
         Ok(parse_usage(&raw))
     }
+}
+
+/// Derive a plan display name from Claude Code's stored credential fields.
+pub fn plan_from_creds(creds: &crate::cc::CcCreds) -> String {
+    creds.rate_limit_tier.as_deref().and_then(plan_from_hint)
+        .or_else(|| creds.subscription_type.as_deref().and_then(plan_from_hint))
+        .unwrap_or_else(|| "Pro".into())
 }
 
 /// Choose the claude.ai consumer organization — the one with the "chat"

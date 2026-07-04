@@ -1,5 +1,6 @@
 {
   "app_name": "Claude Tank",
+  "webview2_missing": "Microsoft Edge WebView2 Runtime is required for the dashboard and login screen, but was not found.\n\nOpen the download page now?",
   "setup_title": "Setup",
   "setup_desc": "Monitor your Claude usage right from the taskbar.",
   "setup_step1": "Click the button below to log in to claude.ai",

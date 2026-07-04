@@ -1,5 +1,6 @@
 {
   "app_name": "Claude Tank",
+  "webview2_missing": "Le runtime Microsoft Edge WebView2, nécessaire au tableau de bord et à l'écran de connexion, est introuvable.\n\nOuvrir la page de téléchargement maintenant ?",
   "connecting": "Connexion...",
   "left": "restant",
   "tray_left": "restant",
