@@ -17,6 +17,7 @@ mod panic_hook;
 mod popup;
 mod time_util;
 mod tray;
+mod update;
 mod win_util;
 
 use api::UsageData;
@@ -59,7 +60,11 @@ pub enum AppMessage {
     UsageUpdate(UsageData),
     Error(String),
     TrayClicked { x: i32, y: i32 },
+    UpdateAvailable { version: String, url: String },
 }
+
+/// How long to wait before re-checking GitHub after a check finds no update.
+const UPDATE_RECHECK: Duration = Duration::from_secs(6 * 3600);
 
 fn main() {
     panic_hook::install();
@@ -85,11 +90,25 @@ fn main() {
         }
     });
 
+    // Check GitHub for a newer release in the background. Retries every few hours
+    // until an update is found, then stops. Failures are silent.
+    let tx_upd = tx.clone();
+    std::thread::spawn(move || loop {
+        if let Some(info) = update::check() {
+            let _ = tx_upd.send(AppMessage::UpdateAvailable {
+                version: info.version, url: info.url,
+            });
+            break;
+        }
+        std::thread::sleep(UPDATE_RECHECK);
+    });
+
     let tray = tray::create_tray(config.clone(), tx.clone(), &strings);
     let mut current_plan = String::from("Pro");
     let mut last_data: Option<UsageData> = None;
     let popup = popup::create_popup();
     let mut notified_threshold = false;
+    let mut update_info: Option<(String, String)> = None;
 
     unsafe {
         use windows::Win32::UI::WindowsAndMessaging::*;
@@ -101,6 +120,7 @@ fn main() {
                 handle_app_message(
                     app_msg, &tray, &config, &strings, &tx, &popup,
                     &mut current_plan, &mut last_data, &mut notified_threshold,
+                    &mut update_info,
                 );
             }
 
@@ -127,6 +147,7 @@ fn handle_app_message(
     current_plan: &mut String,
     last_data: &mut Option<UsageData>,
     notified_threshold: &mut bool,
+    update_info: &mut Option<(String, String)>,
 ) {
     match msg {
         AppMessage::LoginSuccess { org_id, plan, data, auth } => {
@@ -135,7 +156,7 @@ fn handle_app_message(
             if !org_id.is_empty() {
                 let _ = AppConfig::save_session(&org_id);
             }
-            tray::update_tray(tray, &data, current_plan, strings);
+            tray::update_tray(tray, &data, current_plan, update_info.is_some(), strings);
             *last_data = Some(data);
             *notified_threshold = false;
             // Supersede any previous poll loop so re-login doesn't double-poll.
@@ -145,12 +166,26 @@ fn handle_app_message(
             std::thread::spawn(move || { poll_loop(tx_poll, org_id, cfg, generation, auth); });
         }
         AppMessage::UsageUpdate(data) => {
-            tray::update_tray(tray, &data, current_plan, strings);
+            tray::update_tray(tray, &data, current_plan, update_info.is_some(), strings);
             check_threshold(tray, &data, config, current_plan, notified_threshold, strings);
             if let Some(ref p) = popup {
                 popup::push_data(p, &data, current_plan);
             }
             *last_data = Some(data);
+        }
+        AppMessage::UpdateAvailable { version, url } => {
+            #[cfg(debug_assertions)]
+            eprintln!("Update available: v{} ({})", version, url);
+            *update_info = Some((version.clone(), url.clone()));
+            // Re-render the tray icon with the red badge. Preserve the live
+            // gauges if usage is already shown; otherwise badge the placeholder.
+            match last_data {
+                Some(data) => tray::update_tray(tray, data, current_plan, true, strings),
+                None => tray::set_badge(tray, true),
+            }
+            if let Some(ref p) = popup {
+                popup::push_update(p, &version, &url);
+            }
         }
         AppMessage::Error(e) => {
             // Truncate on a char boundary — byte slicing can split a multibyte
@@ -163,6 +198,9 @@ fn handle_app_message(
                 popup::toggle_popup(p, x, y);
                 if let Some(ref data) = last_data {
                     popup::push_data(p, data, current_plan);
+                }
+                if let Some((ref version, ref url)) = update_info {
+                    popup::push_update(p, version, url);
                 }
             }
         }
@@ -241,6 +279,9 @@ fn handle_popup_message(
             let _ = std::fs::remove_file(dir.join("session.json"));
             std::process::exit(0);
         }
+        popup::PopupMessage::OpenUrl(url) => {
+            win_util::open_url(&url);
+        }
     }
 }
 
@@ -284,9 +325,18 @@ fn try_resume_session(tx: &mpsc::Sender<AppMessage>) -> bool {
     false
 }
 
+/// Upper bound on the exponential backoff after repeated poll failures (30 min).
+const MAX_POLL_BACKOFF: u32 = 1800;
+
 /// Polling loop. Rebuilds the client for its auth source, then re-reads the
 /// interval every second so a runtime interval change (or a superseding login
 /// that bumps `POLL_GENERATION`) both take effect promptly.
+///
+/// The `/oauth/usage` endpoint is shared with Claude Code's own polling on the
+/// same token, so it can start returning 429. On any failure the wait grows
+/// exponentially from the configured interval (capped at 30 min), backing off
+/// a throttling endpoint instead of hammering it every 180s and staying stuck
+/// on a stale reading. A success resets the backoff.
 fn poll_loop(
     tx: mpsc::Sender<AppMessage>,
     org_id: String,
@@ -301,18 +351,39 @@ fn poll_loop(
             None => return,
         },
     };
+    let mut fail_streak: u32 = 0;
     loop {
+        let backoff = fail_streak > 0;
+        let backoff_secs = {
+            let base = config.lock().map(|c| c.poll_interval_sec).unwrap_or(180);
+            base.saturating_mul(1u32 << fail_streak.saturating_sub(1).min(4))
+                .min(MAX_POLL_BACKOFF)
+        };
         let mut elapsed = 0u32;
         loop {
             if POLL_GENERATION.load(Ordering::SeqCst) != generation { return; }
-            let interval = config.lock().map(|c| c.poll_interval_sec).unwrap_or(180);
-            if elapsed >= interval { break; }
+            // Healthy: re-read the live interval each second so a manual change
+            // applies promptly. Backing off: hold the longer computed wait.
+            let target = if backoff {
+                backoff_secs
+            } else {
+                config.lock().map(|c| c.poll_interval_sec).unwrap_or(180)
+            };
+            if elapsed >= target { break; }
             std::thread::sleep(Duration::from_secs(1));
             elapsed += 1;
         }
         match client.get_usage(&org_id) {
-            Ok(data) => { let _ = tx.send(AppMessage::UsageUpdate(data)); }
-            Err(e) => { let _ = tx.send(AppMessage::Error(e)); }
+            Ok(data) => {
+                fail_streak = 0;
+                let _ = tx.send(AppMessage::UsageUpdate(data));
+            }
+            Err(e) => {
+                fail_streak = (fail_streak + 1).min(5);
+                #[cfg(debug_assertions)]
+                eprintln!("Poll failed (streak {}): {}", fail_streak, e);
+                let _ = tx.send(AppMessage::Error(e.to_string()));
+            }
         }
     }
 }

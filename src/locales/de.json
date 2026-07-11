@@ -5,6 +5,8 @@
   "left": "übrig",
   "tray_left": "übrig",
   "reset_in": "Reset in",
+  "update_available": "Neue Version",
+  "update_download": "Herunterladen",
   "menu_refresh": "Jetzt aktualisieren",
   "menu_interval": "Aktualisierungsintervall",
   "menu_quit": "Beenden",

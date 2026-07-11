@@ -21,6 +21,13 @@ const EMPTY_BAR: [u8; 4] = [0x15, 0x15, 0x20, 0xFF];
 const SCANLINE: [u8; 4] = [0x10, 0x10, 0x18, 0xFF];
 const BAR_BORDER: [u8; 4] = [0x00, 0xFF, 0xCC, 0x60];
 
+// Update-available badge — a red dot in the top-right corner.
+const DOT_COLOR: [u8; 4] = [0xFF, 0x33, 0x55, 0xFF];   // neon red core
+const DOT_RING: [u8; 4] = [0x0A, 0x0A, 0x0F, 0xFF];    // dark ring for contrast
+const DOT_CX: f64 = 25.0;
+const DOT_CY: f64 = 6.0;
+const DOT_R: f64 = 4.5;
+
 fn cyber_color(remaining_pct: f64) -> [u8; 4] {
     if remaining_pct > 50.0 { [0x00, 0xFF, 0xCC, 0xFF] }       // cyan
     else if remaining_pct > 20.0 { [0xFF, 0xD7, 0x00, 0xFF] }  // gold
@@ -58,7 +65,25 @@ fn draw_bar(rgba: &mut [u8], bar_x: u32, fill_pct: f64, color: [u8; 4]) {
     }
 }
 
-fn generate_icon(five_hour_remaining: f64, seven_day_remaining: f64) -> Icon {
+/// Draw the "update available" badge: a red dot with a dark ring, overlaid on
+/// the top-right corner after the gauges so it reads on any taskbar background.
+fn draw_update_dot(rgba: &mut [u8]) {
+    for y in 0..ICON_SIZE {
+        for x in 0..ICON_SIZE {
+            let dx = x as f64 - DOT_CX;
+            let dy = y as f64 - DOT_CY;
+            let dist = (dx * dx + dy * dy).sqrt();
+            let idx = ((y * ICON_SIZE + x) * 4) as usize;
+            if dist <= DOT_R {
+                rgba[idx..idx + 4].copy_from_slice(&DOT_COLOR);
+            } else if dist <= DOT_R + 1.3 {
+                rgba[idx..idx + 4].copy_from_slice(&DOT_RING);
+            }
+        }
+    }
+}
+
+fn generate_icon(five_hour_remaining: f64, seven_day_remaining: f64, update_available: bool) -> Icon {
     let mut rgba = vec![0u8; (ICON_SIZE * ICON_SIZE * 4) as usize];
 
     for y in 0..ICON_SIZE {
@@ -74,6 +99,10 @@ fn generate_icon(five_hour_remaining: f64, seven_day_remaining: f64) -> Icon {
 
     draw_bar(&mut rgba, LEFT_BAR_X, five_hour_remaining, cyber_color(five_hour_remaining));
     draw_bar(&mut rgba, RIGHT_BAR_X, seven_day_remaining, cyber_color(seven_day_remaining));
+
+    if update_available {
+        draw_update_dot(&mut rgba);
+    }
 
     Icon::from_rgba(rgba, ICON_SIZE, ICON_SIZE).expect("Failed to create icon")
 }
@@ -111,7 +140,7 @@ pub fn create_tray(
 
     let tray = TrayIconBuilder::new()
         .with_tooltip(&format!("Claude Tank\n{}", strings.get("tray_connecting")))
-        .with_icon(generate_icon(100.0, 100.0))
+        .with_icon(generate_icon(100.0, 100.0, false))
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false) // Left click = popup, right click = menu
         .build()
@@ -153,13 +182,20 @@ pub fn create_tray(
     tray
 }
 
+/// Re-render the tray icon showing only the update badge over placeholder
+/// gauges. Used when an update is found before any usage data has loaded, so
+/// the red dot still appears; the next usage update re-renders the real gauges.
+pub fn set_badge(tray: &TrayIcon, update_available: bool) {
+    let _ = tray.set_icon(Some(generate_icon(100.0, 100.0, update_available)));
+}
+
 pub fn update_tray(
     tray: &TrayIcon, data: &crate::api::UsageData,
-    plan: &str, _strings: &crate::i18n::Strings,
+    plan: &str, update_available: bool, _strings: &crate::i18n::Strings,
 ) {
     let r5 = 100.0 - data.five_hour;
     let r7 = 100.0 - data.seven_day;
-    let _ = tray.set_icon(Some(generate_icon(r5, r7)));
+    let _ = tray.set_icon(Some(generate_icon(r5, r7, update_available)));
 
     // Windows caps the tray tooltip (szTip) at 64 UTF-16 chars — tray-icon does
     // not bump the notify-icon version — so the text must stay terse or the

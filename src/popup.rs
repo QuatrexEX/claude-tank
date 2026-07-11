@@ -18,6 +18,7 @@ pub enum PopupMessage {
     Setting { key: String, value: String },
     Relogin,
     Clear,
+    OpenUrl(String),
 }
 
 pub struct Popup {
@@ -75,7 +76,8 @@ pub fn create_popup() -> Option<Popup> {
         let locale_json = crate::i18n::locale_json(&locale);
         let config_json = serde_json::to_string(&config).unwrap_or_default();
 
-        let base_html = include_str!("dashboard.html");
+        let base_html = include_str!("dashboard.html")
+            .replace("{{VERSION}}", env!("CARGO_PKG_VERSION"));
         // Inject locale + config before closing </body>
         let init_script = format!(
             "<script>document.addEventListener('DOMContentLoaded',function(){{applyLocale({});loadConfig({})}});</script>",
@@ -103,6 +105,11 @@ pub fn create_popup() -> Option<Popup> {
                         }
                         "relogin" => { let _ = tx.send(PopupMessage::Relogin); }
                         "clear" => { let _ = tx.send(PopupMessage::Clear); }
+                        "open" => {
+                            if let Some(u) = val["url"].as_str() {
+                                let _ = tx.send(PopupMessage::OpenUrl(u.to_string()));
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -147,6 +154,13 @@ pub fn push_data(popup: &Popup, data: &crate::api::UsageData, plan: &str) {
             "sonnet": data.sonnet,
         })
     );
+    let _ = popup.webview.evaluate_script(&js);
+}
+
+/// Show the "update available" banner in the dashboard with a download link.
+pub fn push_update(popup: &Popup, version: &str, url: &str) {
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('\'', "\\'");
+    let js = format!("showUpdate('{}','{}')", esc(version), esc(url));
     let _ = popup.webview.evaluate_script(&js);
 }
 

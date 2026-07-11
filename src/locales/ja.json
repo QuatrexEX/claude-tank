@@ -67,6 +67,8 @@
   "clear": "全データ消去",
   "clear_btn": "消去",
   "updated": "最終更新",
+  "update_available": "新しいバージョン",
+  "update_download": "ダウンロード",
   "tray_connecting": "接続中...",
   "tray_left": "残り",
   "tray_error": "エラー",

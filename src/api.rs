@@ -38,29 +38,66 @@ pub enum AuthKind {
     Session,
 }
 
+/// Categorized API failure. The poll loop backs off harder on `RateLimited` so
+/// the shared Claude Code token isn't hammered while the endpoint is throttling.
+#[derive(Debug)]
+pub enum ApiError {
+    RateLimited,
+    Http(u16),
+    Other(String),
+}
+
+impl ApiError {
+    pub fn is_rate_limited(&self) -> bool {
+        matches!(self, ApiError::RateLimited)
+    }
+}
+
+impl std::fmt::Display for ApiError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ApiError::RateLimited => write!(f, "Rate limited (429)"),
+            ApiError::Http(code) => write!(f, "HTTP {}", code),
+            ApiError::Other(s) => write!(f, "{}", s),
+        }
+    }
+}
+
+impl From<ApiError> for String {
+    fn from(e: ApiError) -> String {
+        e.to_string()
+    }
+}
+
 pub struct ApiClient {
     agent: ureq::Agent,
     auth: AuthSource,
 }
 
+/// Build a ureq agent configured for Windows Schannel TLS with a global timeout.
+///
+/// ureq's Config defaults to the Rustls provider even with the rustls feature
+/// off, so the provider must be set explicitly to native-tls (Windows Schannel)
+/// or the first HTTPS request panics. PlatformVerifier trusts the OS certificate
+/// store; the default (bundled WebPki roots) fails Schannel chain building on
+/// Windows. Shared by [`ApiClient`] and the GitHub update check.
+pub fn build_agent() -> ureq::Agent {
+    let tls = ureq::tls::TlsConfig::builder()
+        .provider(ureq::tls::TlsProvider::NativeTls)
+        .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+        .build();
+    // A global timeout keeps a stalled connection from blocking a poll cycle
+    // (or startup resume) indefinitely.
+    let config = ureq::Agent::config_builder()
+        .tls_config(tls)
+        .timeout_global(Some(REQUEST_TIMEOUT))
+        .build();
+    ureq::Agent::new_with_config(config)
+}
+
 impl ApiClient {
     pub fn new(auth: AuthSource) -> Self {
-        // ureq's Config defaults to the Rustls provider even with the rustls
-        // feature off, so the provider must be set explicitly to native-tls
-        // (Windows Schannel) or the first HTTPS request panics. PlatformVerifier
-        // trusts the OS certificate store; the default (bundled WebPki roots)
-        // fails Schannel chain building on Windows.
-        let tls = ureq::tls::TlsConfig::builder()
-            .provider(ureq::tls::TlsProvider::NativeTls)
-            .root_certs(ureq::tls::RootCerts::PlatformVerifier)
-            .build();
-        // A global timeout keeps a stalled connection from blocking a poll
-        // cycle (or startup resume) indefinitely.
-        let config = ureq::Agent::config_builder()
-            .tls_config(tls)
-            .timeout_global(Some(REQUEST_TIMEOUT))
-            .build();
-        Self { agent: ureq::Agent::new_with_config(config), auth }
+        Self { agent: build_agent(), auth }
     }
 
     pub fn session(session_key: String, extra_cookies: HashMap<String, String>) -> Self {
@@ -79,7 +116,7 @@ impl ApiClient {
         parts.join("; ")
     }
 
-    fn get_json(&self, url: &str) -> Result<serde_json::Value, String> {
+    fn get_json(&self, url: &str) -> Result<serde_json::Value, ApiError> {
         let req = self.agent.get(url)
             .header("Accept", "application/json")
             .header("User-Agent", USER_AGENT);
@@ -89,17 +126,22 @@ impl ApiClient {
                 .header("Cookie", &Self::cookie_header(session_key, extra_cookies))
                 .header("anthropic-client-platform", "web_claude_ai"),
             AuthSource::ClaudeCode => {
-                let creds = crate::cc::load().ok_or("Claude Code credentials not found")?;
+                let creds = crate::cc::load()
+                    .ok_or_else(|| ApiError::Other("Claude Code credentials not found".into()))?;
                 req.header("Authorization", &format!("Bearer {}", creds.access_token))
                     .header("anthropic-beta", CC_OAUTH_BETA)
                     .header("anthropic-version", ANTHROPIC_VERSION)
             }
         };
 
-        let mut resp = req.call().map_err(|e| format!("Request failed: {}", e))?;
+        let mut resp = req.call().map_err(|e| match e {
+            ureq::Error::StatusCode(429) => ApiError::RateLimited,
+            ureq::Error::StatusCode(code) => ApiError::Http(code),
+            other => ApiError::Other(format!("Request failed: {}", other)),
+        })?;
         resp.body_mut()
             .read_json()
-            .map_err(|e| format!("JSON parse error: {}", e))
+            .map_err(|e| ApiError::Other(format!("JSON parse error: {}", e)))
     }
 
     pub fn get_org_id(&self) -> Result<String, String> {
@@ -157,12 +199,21 @@ impl ApiClient {
         Ok("Pro".into()) // Default assumption
     }
 
-    pub fn get_usage(&self, org_id: &str) -> Result<UsageData, String> {
+    pub fn get_usage(&self, org_id: &str) -> Result<UsageData, ApiError> {
         let url = match &self.auth {
             AuthSource::ClaudeCode => format!("{}/oauth/usage", ANTHROPIC_BASE),
             AuthSource::Session { .. } => format!("{}/organizations/{}/usage", CLAUDE_BASE, org_id),
         };
         let raw = self.get_json(&url)?;
+        // A 200 body carrying an `error` object, or one missing both usage
+        // blocks, means the shape isn't what we expect. Fail loudly (keeping the
+        // last gauge) instead of silently parsing every field to 0% → full tank.
+        if raw.get("error").is_some() {
+            return Err(ApiError::Other("API returned an error object".into()));
+        }
+        if raw.get("five_hour").is_none() && raw.get("seven_day").is_none() {
+            return Err(ApiError::Other("Unexpected usage response shape".into()));
+        }
         Ok(parse_usage(&raw))
     }
 }

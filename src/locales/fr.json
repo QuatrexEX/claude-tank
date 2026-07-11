@@ -5,6 +5,8 @@
   "left": "restant",
   "tray_left": "restant",
   "reset_in": "Réinit. dans",
+  "update_available": "Nouvelle version",
+  "update_download": "Télécharger",
   "menu_refresh": "Actualiser maintenant",
   "menu_interval": "Intervalle de mise à jour",
   "menu_quit": "Quitter",
