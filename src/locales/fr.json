@@ -4,6 +4,7 @@
   "connecting": "Connexion...",
   "left": "restant",
   "tray_left": "restant",
+  "tray_reconnecting": "Reconnexion… veuillez patienter",
   "reset_in": "Réinit. dans",
   "update_available": "Nouvelle version",
   "update_download": "Télécharger",

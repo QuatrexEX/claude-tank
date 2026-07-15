@@ -58,9 +58,20 @@ const CHROME_USER_AGENT: &str =
 pub enum AppMessage {
     LoginSuccess { org_id: String, plan: String, data: UsageData, auth: api::AuthKind },
     UsageUpdate(UsageData),
-    Error(String),
+    /// A poll failed. `transient` marks a self-healing HTTP 4xx (token refresh
+    /// or rate limit) so the tray reassures ("please wait") instead of alarming.
+    Error { detail: String, transient: bool },
     TrayClicked { x: i32, y: i32 },
     UpdateAvailable { version: String, url: String },
+}
+
+/// Mutable UI state carried across the main message loop and updated by
+/// [`handle_app_message`] as usage, plan, and update-availability change.
+struct AppState {
+    current_plan: String,
+    last_data: Option<UsageData>,
+    notified_threshold: bool,
+    update_info: Option<(String, String)>,
 }
 
 /// How long to wait before re-checking GitHub after a check finds no update.
@@ -104,11 +115,13 @@ fn main() {
     });
 
     let tray = tray::create_tray(config.clone(), tx.clone(), &strings);
-    let mut current_plan = String::from("Pro");
-    let mut last_data: Option<UsageData> = None;
     let popup = popup::create_popup();
-    let mut notified_threshold = false;
-    let mut update_info: Option<(String, String)> = None;
+    let mut state = AppState {
+        current_plan: String::from("Pro"),
+        last_data: None,
+        notified_threshold: false,
+        update_info: None,
+    };
 
     unsafe {
         use windows::Win32::UI::WindowsAndMessaging::*;
@@ -117,11 +130,7 @@ fn main() {
 
         while GetMessageW(&mut msg, None, 0, 0).into() {
             while let Ok(app_msg) = rx.try_recv() {
-                handle_app_message(
-                    app_msg, &tray, &config, &strings, &tx, &popup,
-                    &mut current_plan, &mut last_data, &mut notified_threshold,
-                    &mut update_info,
-                );
+                handle_app_message(app_msg, &tray, &config, &strings, &tx, &popup, &mut state);
             }
 
             // Process popup settings
@@ -144,21 +153,18 @@ fn handle_app_message(
     strings: &Arc<i18n::Strings>,
     tx: &mpsc::Sender<AppMessage>,
     popup: &Option<popup::Popup>,
-    current_plan: &mut String,
-    last_data: &mut Option<UsageData>,
-    notified_threshold: &mut bool,
-    update_info: &mut Option<(String, String)>,
+    state: &mut AppState,
 ) {
     match msg {
         AppMessage::LoginSuccess { org_id, plan, data, auth } => {
-            *current_plan = plan;
+            state.current_plan = plan;
             // Claude Code auth carries no org_id and needs no session file.
             if !org_id.is_empty() {
                 let _ = AppConfig::save_session(&org_id);
             }
-            tray::update_tray(tray, &data, current_plan, update_info.is_some(), strings);
-            *last_data = Some(data);
-            *notified_threshold = false;
+            tray::update_tray(tray, &data, &state.current_plan, state.update_info.is_some(), strings);
+            state.last_data = Some(data);
+            state.notified_threshold = false;
             // Supersede any previous poll loop so re-login doesn't double-poll.
             let generation = POLL_GENERATION.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
             let tx_poll = tx.clone();
@@ -166,40 +172,47 @@ fn handle_app_message(
             std::thread::spawn(move || { poll_loop(tx_poll, org_id, cfg, generation, auth); });
         }
         AppMessage::UsageUpdate(data) => {
-            tray::update_tray(tray, &data, current_plan, update_info.is_some(), strings);
-            check_threshold(tray, &data, config, current_plan, notified_threshold, strings);
+            tray::update_tray(tray, &data, &state.current_plan, state.update_info.is_some(), strings);
+            check_threshold(tray, &data, config, &state.current_plan, &mut state.notified_threshold, strings);
             if let Some(ref p) = popup {
-                popup::push_data(p, &data, current_plan);
+                popup::push_data(p, &data, &state.current_plan);
             }
-            *last_data = Some(data);
+            state.last_data = Some(data);
         }
         AppMessage::UpdateAvailable { version, url } => {
             #[cfg(debug_assertions)]
             eprintln!("Update available: v{} ({})", version, url);
-            *update_info = Some((version.clone(), url.clone()));
+            state.update_info = Some((version.clone(), url.clone()));
             // Re-render the tray icon with the red badge. Preserve the live
             // gauges if usage is already shown; otherwise badge the placeholder.
-            match last_data {
-                Some(data) => tray::update_tray(tray, data, current_plan, true, strings),
+            match &state.last_data {
+                Some(data) => tray::update_tray(tray, data, &state.current_plan, true, strings),
                 None => tray::set_badge(tray, true),
             }
             if let Some(ref p) = popup {
                 popup::push_update(p, &version, &url);
             }
         }
-        AppMessage::Error(e) => {
-            // Truncate on a char boundary — byte slicing can split a multibyte
-            // sequence (localized OS / server errors) and panic.
-            let short: String = e.chars().take(50).collect();
-            let _ = tray.set_tooltip(Some(&format!("Claude Tank\nError: {}", short)));
+        AppMessage::Error { detail, transient } => {
+            // A transient 4xx (401 token refresh, 429 rate limit) clears itself
+            // within a poll or two — reassure rather than alarm. Other failures
+            // show the detail, truncated on a char boundary (byte slicing can
+            // split a multibyte localized error mid-sequence and panic).
+            let line = if transient {
+                strings.get("tray_reconnecting").to_string()
+            } else {
+                let short: String = detail.chars().take(50).collect();
+                format!("Error: {}", short)
+            };
+            let _ = tray.set_tooltip(Some(&format!("Claude Tank\n{}", line)));
         }
         AppMessage::TrayClicked { x, y } => {
             if let Some(ref p) = popup {
                 popup::toggle_popup(p, x, y);
-                if let Some(ref data) = last_data {
-                    popup::push_data(p, data, current_plan);
+                if let Some(ref data) = state.last_data {
+                    popup::push_data(p, data, &state.current_plan);
                 }
-                if let Some((ref version, ref url)) = update_info {
+                if let Some((ref version, ref url)) = state.update_info {
                     popup::push_update(p, version, url);
                 }
             }
@@ -333,10 +346,12 @@ const MAX_POLL_BACKOFF: u32 = 1800;
 /// that bumps `POLL_GENERATION`) both take effect promptly.
 ///
 /// The `/oauth/usage` endpoint is shared with Claude Code's own polling on the
-/// same token, so it can start returning 429. On any failure the wait grows
+/// same token, so it can start returning 429. On most failures the wait grows
 /// exponentially from the configured interval (capped at 30 min), backing off
 /// a throttling endpoint instead of hammering it every 180s and staying stuck
-/// on a stale reading. A success resets the backoff.
+/// on a stale reading. A success resets the backoff. A 401 is the exception: it
+/// means Claude Code is mid-refresh of the shared token, which we re-read next
+/// poll, so it keeps the normal cadence to recover as fast as possible.
 fn poll_loop(
     tx: mpsc::Sender<AppMessage>,
     org_id: String,
@@ -379,10 +394,21 @@ fn poll_loop(
                 let _ = tx.send(AppMessage::UsageUpdate(data));
             }
             Err(e) => {
-                fail_streak = (fail_streak + 1).min(5);
+                // A 401 means the OAuth token expired; Claude Code refreshes it
+                // out of band and the next poll re-reads it, so recovery is
+                // immediate — don't back off (that only delays it). Every other
+                // failure escalates the wait.
+                if e.is_auth() {
+                    fail_streak = 0;
+                } else {
+                    fail_streak = (fail_streak + 1).min(5);
+                }
                 #[cfg(debug_assertions)]
                 eprintln!("Poll failed (streak {}): {}", fail_streak, e);
-                let _ = tx.send(AppMessage::Error(e.to_string()));
+                let _ = tx.send(AppMessage::Error {
+                    transient: e.is_client_error(),
+                    detail: e.to_string(),
+                });
             }
         }
     }

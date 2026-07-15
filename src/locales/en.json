@@ -55,5 +55,6 @@
   "tray_connecting": "Connecting...",
   "tray_left": "left",
   "tray_error": "Error",
+  "tray_reconnecting": "Reconnecting… please wait a moment",
   "tray_warn_only": "only {v}% left!"
 }

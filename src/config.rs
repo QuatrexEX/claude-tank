@@ -87,38 +87,30 @@ impl AppConfig {
         });
         let json_bytes = payload.to_string().into_bytes();
 
-        match crypto::encrypt(&json_bytes) {
-            Ok(encrypted) => {
-                let path = app_dir().join("credentials.enc");
-                fs::write(&path, &encrypted)?;
-                // Remove old plaintext file if exists
-                let _ = fs::remove_file(app_dir().join("credentials.json"));
-                Ok(())
-            }
-            Err(_) => {
-                // Fallback: save as plaintext (shouldn't happen)
-                let path = app_dir().join("credentials.json");
-                fs::write(path, payload.to_string())?;
-                Ok(())
-            }
-        }
+        // DPAPI-encrypt only. On the (very rare) failure we deliberately do NOT
+        // fall back to plaintext — writing the sessionKey unencrypted would
+        // defeat the encryption. The worst case is a re-login on next launch.
+        let encrypted = crypto::encrypt(&json_bytes)?;
+        let dir = app_dir();
+        fs::write(dir.join("credentials.enc"), &encrypted)?;
+        // Remove any legacy plaintext file from older versions.
+        let _ = fs::remove_file(dir.join("credentials.json"));
+        Ok(())
     }
 
     pub fn load_credentials() -> Option<(String, HashMap<String, String>)> {
-        // Try encrypted first
-        let enc_path = app_dir().join("credentials.enc");
-        if let Ok(encrypted) = fs::read(&enc_path) {
+        let dir = app_dir();
+        // Try encrypted first.
+        if let Ok(encrypted) = fs::read(dir.join("credentials.enc")) {
             if let Ok(decrypted) = crypto::decrypt(&encrypted) {
                 if let Ok(json_str) = String::from_utf8(decrypted) {
                     return parse_credentials_json(&json_str);
                 }
             }
         }
-        // Fallback: try plaintext (migration from old version)
-        let json_path = app_dir().join("credentials.json");
-        if let Ok(data) = fs::read_to_string(&json_path) {
+        // Fallback: plaintext from an old version — migrate it to encrypted.
+        if let Ok(data) = fs::read_to_string(dir.join("credentials.json")) {
             if let Some(creds) = parse_credentials_json(&data) {
-                // Migrate to encrypted
                 let _ = Self::save_credentials(&creds.0, &creds.1);
                 return Some(creds);
             }

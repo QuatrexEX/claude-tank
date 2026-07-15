@@ -14,6 +14,11 @@ const POPUP_W: i32 = 340;
 const POPUP_H: i32 = 400;
 const CORNER_RADIUS: i32 = 12;
 
+/// Escape a string for safe embedding inside a single-quoted JS string literal.
+fn js_escape(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
 pub enum PopupMessage {
     Setting { key: String, value: String },
     Relogin,
@@ -141,10 +146,9 @@ pub fn toggle_popup(popup: &Popup, tray_x: i32, tray_y: i32) {
 
 /// Push usage data to the dashboard JS
 pub fn push_data(popup: &Popup, data: &crate::api::UsageData, plan: &str) {
-    let safe_plan = plan.replace('\\', "\\\\").replace('\'', "\\'");
     let js = format!(
         "document.getElementById('plan').textContent='{}';updateDashboard({})",
-        safe_plan,
+        js_escape(plan),
         serde_json::json!({
             "five_hour": data.five_hour,
             "five_hour_reset": data.five_hour_reset,
@@ -159,8 +163,7 @@ pub fn push_data(popup: &Popup, data: &crate::api::UsageData, plan: &str) {
 
 /// Show the "update available" banner in the dashboard with a download link.
 pub fn push_update(popup: &Popup, version: &str, url: &str) {
-    let esc = |s: &str| s.replace('\\', "\\\\").replace('\'', "\\'");
-    let js = format!("showUpdate('{}','{}')", esc(version), esc(url));
+    let js = format!("showUpdate('{}','{}')", js_escape(version), js_escape(url));
     let _ = popup.webview.evaluate_script(&js);
 }
 

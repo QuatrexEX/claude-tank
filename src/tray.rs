@@ -139,7 +139,7 @@ pub fn create_tray(
     ]).expect("Failed to create menu");
 
     let tray = TrayIconBuilder::new()
-        .with_tooltip(&format!("Claude Tank\n{}", strings.get("tray_connecting")))
+        .with_tooltip(format!("Claude Tank\n{}", strings.get("tray_connecting")))
         .with_icon(generate_icon(100.0, 100.0, false))
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false) // Left click = popup, right click = menu

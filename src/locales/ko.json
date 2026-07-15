@@ -4,6 +4,7 @@
   "connecting": "연결 중...",
   "left": "남음",
   "tray_left": "남음",
+  "tray_reconnecting": "다시 연결하는 중… 잠시만 기다려 주세요",
   "reset_in": "재설정까지",
   "update_available": "새 버전",
   "update_download": "다운로드",

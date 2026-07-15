@@ -72,6 +72,7 @@
   "tray_connecting": "接続中...",
   "tray_left": "残り",
   "tray_error": "エラー",
+  "tray_reconnecting": "接続を更新中… しばらくお待ちください",
   "tray_warn_only": "残り {v}% !",
   "menu_refresh": "今すぐ更新",
   "menu_quit": "終了",

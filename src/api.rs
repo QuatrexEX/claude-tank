@@ -48,8 +48,22 @@ pub enum ApiError {
 }
 
 impl ApiError {
-    pub fn is_rate_limited(&self) -> bool {
-        matches!(self, ApiError::RateLimited)
+    /// HTTP 401 — the OAuth access token expired. Claude Code refreshes it out
+    /// of band and we re-read it on the next poll, so recovery is immediate; the
+    /// poll loop must not back off on this (that would only delay the recovery).
+    pub fn is_auth(&self) -> bool {
+        matches!(self, ApiError::Http(401))
+    }
+
+    /// Any HTTP 4xx (401 auth expiry, 429 rate limit, …). These are transient
+    /// client-side conditions the app recovers from on its own, so the tray
+    /// shows a "please wait" reassurance instead of a raw error string.
+    pub fn is_client_error(&self) -> bool {
+        match self {
+            ApiError::RateLimited => true, // 429
+            ApiError::Http(code) => (400..500).contains(code),
+            ApiError::Other(_) => false,
+        }
     }
 }
 
