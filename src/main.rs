@@ -61,6 +61,10 @@ pub enum AppMessage {
     /// A poll failed. `transient` marks a self-healing HTTP 4xx (token refresh
     /// or rate limit) so the tray reassures ("please wait") instead of alarming.
     Error { detail: String, transient: bool },
+    /// Boot found only an expired Claude Code token: no live auth to resume
+    /// with yet, but naming the fix (run Claude Code) beats a doomed login
+    /// window, since only Claude Code itself can refresh the file.
+    CcTokenExpired,
     TrayClicked { x: i32, y: i32 },
     UpdateAvailable { version: String, url: String },
 }
@@ -72,6 +76,7 @@ struct AppState {
     last_data: Option<UsageData>,
     notified_threshold: bool,
     update_info: Option<(String, String)>,
+    notified_cc_expired: bool,
 }
 
 /// How long to wait before re-checking GitHub after a check finds no update.
@@ -95,9 +100,20 @@ fn main() {
     // Resolve saved auth off the main thread so the tray appears instantly, even
     // on a slow connection. Falls through to the login window if nothing resumes.
     let tx_boot = tx.clone();
-    std::thread::spawn(move || {
-        if !try_resume_session(&tx_boot) {
-            open_login_webview(tx_boot);
+    std::thread::spawn(move || loop {
+        match try_resume_session(&tx_boot) {
+            Resume::Ok => break,
+            Resume::NoAuth => {
+                open_login_webview(tx_boot);
+                break;
+            }
+            // A login window can't fix an expired Claude Code token — only
+            // running Claude Code can. Tell the user, then keep watching the
+            // credentials file so the tray recovers on its own.
+            Resume::CcTokenExpired => {
+                let _ = tx_boot.send(AppMessage::CcTokenExpired);
+                std::thread::sleep(Duration::from_secs(60));
+            }
         }
     });
 
@@ -121,6 +137,7 @@ fn main() {
         last_data: None,
         notified_threshold: false,
         update_info: None,
+        notified_cc_expired: false,
     };
 
     unsafe {
@@ -165,6 +182,7 @@ fn handle_app_message(
             tray::update_tray(tray, &data, &state.current_plan, state.update_info.is_some(), strings);
             state.last_data = Some(data);
             state.notified_threshold = false;
+            state.notified_cc_expired = false;
             // Supersede any previous poll loop so re-login doesn't double-poll.
             let generation = POLL_GENERATION.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
             let tx_poll = tx.clone();
@@ -178,6 +196,17 @@ fn handle_app_message(
                 popup::push_data(p, &data, &state.current_plan);
             }
             state.last_data = Some(data);
+            state.notified_cc_expired = false;
+        }
+        AppMessage::CcTokenExpired => {
+            let text = strings.get("cc_token_expired");
+            let _ = tray.set_tooltip(Some(&format!("Claude Tank\n{}", text)));
+            // The boot retry loop resends this every 60s; balloon only on the
+            // transition into the expired state, not on every retry.
+            if !state.notified_cc_expired {
+                notify::show("Claude Tank", text);
+                state.notified_cc_expired = true;
+            }
         }
         AppMessage::UpdateAvailable { version, url } => {
             #[cfg(debug_assertions)]
@@ -298,11 +327,20 @@ fn handle_popup_message(
     }
 }
 
+/// Outcome of [`try_resume_session`], so the boot thread can tell "no saved
+/// auth at all" (open the login window) from "Claude Code token expired"
+/// (only running Claude Code fixes that — wait for the refresh instead).
+enum Resume {
+    Ok,
+    CcTokenExpired,
+    NoAuth,
+}
+
 /// Resume without a login window, preferring Claude Code's OAuth token and
-/// falling back to a saved claude.ai session cookie. Returns false if neither
-/// works, so the caller opens the WebView2 login.
-fn try_resume_session(tx: &mpsc::Sender<AppMessage>) -> bool {
+/// falling back to a saved claude.ai session cookie.
+fn try_resume_session(tx: &mpsc::Sender<AppMessage>) -> Resume {
     // 1. Claude Code OAuth — works if the user already runs Claude Code.
+    let mut cc_expired = false;
     if let Some(creds) = cc::load() {
         let client = api::ApiClient::claude_code();
         match client.get_usage("") {
@@ -314,12 +352,13 @@ fn try_resume_session(tx: &mpsc::Sender<AppMessage>) -> bool {
                 let _ = tx.send(AppMessage::LoginSuccess {
                     org_id: String::new(), plan, data, auth: api::AuthKind::ClaudeCode,
                 });
-                return true;
+                return Resume::Ok;
             }
-            #[cfg(debug_assertions)]
-            Err(_e) => eprintln!("Claude Code auth failed: {}. Trying saved session...", _e),
-            #[cfg(not(debug_assertions))]
-            Err(_) => {}
+            Err(e) => {
+                cc_expired = e.is_auth();
+                #[cfg(debug_assertions)]
+                eprintln!("Claude Code auth failed: {}. Trying saved session...", e);
+            }
         }
     }
     // 2. Saved claude.ai session cookie from a previous WebView2 login.
@@ -332,10 +371,10 @@ fn try_resume_session(tx: &mpsc::Sender<AppMessage>) -> bool {
             let _ = tx.send(AppMessage::LoginSuccess {
                 org_id, plan, data, auth: api::AuthKind::Session,
             });
-            return true;
+            return Resume::Ok;
         }
     }
-    false
+    if cc_expired { Resume::CcTokenExpired } else { Resume::NoAuth }
 }
 
 /// Upper bound on the exponential backoff after repeated poll failures (30 min).

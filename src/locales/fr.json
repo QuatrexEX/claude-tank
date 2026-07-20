@@ -5,6 +5,7 @@
   "left": "restant",
   "tray_left": "restant",
   "tray_reconnecting": "Reconnexion… veuillez patienter",
+  "cc_token_expired": "Le jeton Claude Code a expiré. Lancez Claude Code pour le renouveler — la reconnexion est automatique.",
   "reset_in": "Réinit. dans",
   "update_available": "Nouvelle version",
   "update_download": "Télécharger",

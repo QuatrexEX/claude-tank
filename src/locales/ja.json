@@ -73,6 +73,7 @@
   "tray_left": "残り",
   "tray_error": "エラー",
   "tray_reconnecting": "接続を更新中… しばらくお待ちください",
+  "cc_token_expired": "Claude Code のトークンが失効しています。Claude Code を起動すると自動的に再接続します。",
   "tray_warn_only": "残り {v}% !",
   "menu_refresh": "今すぐ更新",
   "menu_quit": "終了",
