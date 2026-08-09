@@ -12,16 +12,37 @@
 //! `/home/*/.claude/.credentials.json` probed via the `\\wsl.localhost\` share,
 //! taking the freshest `expiresAt` on offer. Note: reading a distro's files
 //! starts that distro if it is not already running, which is why the probe is
-//! strictly a fallback.
+//! strictly a fallback — and why its outcome is cached (see [`WslProbe`]):
+//! `load()` runs on every poll, and a full probe each time would keep waking
+//! the WSL VM for users whose Windows-side token has merely expired.
 
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub struct CcCreds {
     pub access_token: String,
     pub rate_limit_tier: Option<String>,
     pub subscription_type: Option<String>,
 }
+
+/// How long a failed WSL probe suppresses the next one. Probing reads
+/// `\\wsl.localhost\`, which boots stopped distros; without this TTL a missing
+/// credentials file would wake the WSL VM again on every poll.
+const WSL_REPROBE: Duration = Duration::from_secs(300);
+
+/// Outcome of the last WSL probe. `Hit` pins the one file that yielded
+/// credentials so later polls re-read just it — picking up Claude Code's
+/// refreshes without touching the other distros — until it stops being
+/// readable (distro unregistered, Claude Code logged out), which triggers a
+/// re-probe. `Miss` timestamps a failed full probe so it is not repeated
+/// until [`WSL_REPROBE`] has passed.
+enum WslProbe {
+    Hit(PathBuf),
+    Miss(Instant),
+}
+
+static WSL_PROBE: Mutex<Option<WslProbe>> = Mutex::new(None);
 
 fn wsl_candidate_paths() -> Vec<PathBuf> {
     let mut paths = Vec::new();
@@ -53,18 +74,53 @@ pub fn load() -> Option<CcCreds> {
     match local {
         Some((expires, creds)) if expires > now_ms() => Some(creds),
         local => {
-            // No usable local file: probe the WSL distros and take the
-            // freshest token, keeping a stale local one as last resort (a 401
-            // then drops the caller back to session auth).
+            // No usable local file: fall back to WSL, keeping a stale local
+            // token as last resort (a 401 then drops the caller back to
+            // session auth).
             let mut best = local;
-            for path in wsl_candidate_paths() {
-                if let Some((expires, creds)) = load_file(&path) {
-                    if best.as_ref().map_or(true, |(b, _)| expires > *b) {
-                        best = Some((expires, creds));
-                    }
+            if let Some((expires, creds)) = load_wsl() {
+                if best.as_ref().map_or(true, |(b, _)| expires > *b) {
+                    best = Some((expires, creds));
                 }
             }
             best.map(|(_, creds)| creds)
+        }
+    }
+}
+
+/// The WSL side of [`load`], throttled through [`WSL_PROBE`] so that only the
+/// first lookup (and the occasional recovery from a vanished file) walks every
+/// distro; steady-state polls re-read a single known-good file or nothing.
+fn load_wsl() -> Option<(f64, CcCreds)> {
+    let mut probe = WSL_PROBE.lock().unwrap();
+    match &*probe {
+        // Pinned file: re-read only it, falling through to a full re-probe
+        // just when it is gone.
+        Some(WslProbe::Hit(path)) => {
+            if let Some(found) = load_file(path) {
+                return Some(found);
+            }
+        }
+        // Recent failed probe: stay off the WSL share entirely.
+        Some(WslProbe::Miss(at)) if at.elapsed() < WSL_REPROBE => return None,
+        _ => {}
+    }
+    let mut best: Option<(PathBuf, (f64, CcCreds))> = None;
+    for path in wsl_candidate_paths() {
+        if let Some(found) = load_file(&path) {
+            if best.as_ref().map_or(true, |(_, (b, _))| found.0 > *b) {
+                best = Some((path, found));
+            }
+        }
+    }
+    match best {
+        Some((path, found)) => {
+            *probe = Some(WslProbe::Hit(path));
+            Some(found)
+        }
+        None => {
+            *probe = Some(WslProbe::Miss(Instant::now()));
+            None
         }
     }
 }
