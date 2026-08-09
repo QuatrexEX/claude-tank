@@ -56,5 +56,6 @@
   "tray_left": "left",
   "tray_error": "Error",
   "tray_reconnecting": "Reconnecting… please wait a moment",
+  "cc_token_expired": "Claude Code token expired. Launch Claude Code to refresh it — reconnects automatically.",
   "tray_warn_only": "only {v}% left!"
 }

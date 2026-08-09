@@ -5,6 +5,7 @@
   "left": "übrig",
   "tray_left": "übrig",
   "tray_reconnecting": "Verbindung wird erneuert… bitte warten",
+  "cc_token_expired": "Claude-Code-Token abgelaufen. Claude Code starten, um es zu erneuern — verbindet sich automatisch neu.",
   "reset_in": "Reset in",
   "update_available": "Neue Version",
   "update_download": "Herunterladen",
