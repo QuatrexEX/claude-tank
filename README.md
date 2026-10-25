@@ -36,6 +36,18 @@ No more surprise rate limits — see your 5-hour and 7-day remaining capacity at
 3. Log in normally (Google, email, SSO)
 4. Done! The tray icon shows your usage gauges
 
+## Verifying the Download
+
+Since v1.6.1, `claude-tank.exe` is built by [GitHub Actions](.github/workflows/release.yml) from the tagged commit and carries a signed build provenance attestation. To confirm a download was built from this repository, run:
+
+```bash
+gh attestation verify claude-tank.exe -R QuatrexEX/claude-tank
+```
+
+Each release also lists the exe's SHA256. In PowerShell, compare it with `Get-FileHash claude-tank.exe`.
+
+The exe is not Authenticode-signed, so Windows SmartScreen may warn on first run.
+
 ## How It Works
 
 Claude Tank uses the same internal API as browser extensions like [claude-counter](https://github.com/she-llac/claude-counter) and [Usage4Claude](https://github.com/f-is-h/Usage4Claude):
