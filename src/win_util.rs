@@ -75,13 +75,38 @@ pub fn prompt_webview2_install(message: &str) {
     }
 }
 
-/// Open a URL in the user's default browser.
+/// Open a URL in the user's default browser. Only `https://` is accepted:
+/// ShellExecuteW would otherwise also run local programs or other URL schemes.
 pub fn open_url(url: &str) {
+    if !is_https_url(url) {
+        return;
+    }
     let file = HSTRING::from(url);
     unsafe {
         let _ = ShellExecuteW(
             None, w!("open"), PCWSTR(file.as_ptr()),
             PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL,
         );
+    }
+}
+
+/// True only for an `https://` URL (scheme compared case-insensitively).
+fn is_https_url(url: &str) -> bool {
+    url.get(..8).is_some_and(|p| p.eq_ignore_ascii_case("https://"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_https_url;
+
+    #[test]
+    fn only_https_is_openable() {
+        assert!(is_https_url("https://github.com/QuatrexEX/claude-tank/releases/latest"));
+        assert!(is_https_url("HTTPS://example.com"));
+        assert!(!is_https_url("http://example.com"));
+        assert!(!is_https_url("file:///C:/Windows/System32/calc.exe"));
+        assert!(!is_https_url(r"C:\Windows\System32\calc.exe"));
+        assert!(!is_https_url("ms-settings:"));
+        assert!(!is_https_url(""));
     }
 }

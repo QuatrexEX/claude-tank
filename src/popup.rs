@@ -23,7 +23,9 @@ pub enum PopupMessage {
     Setting { key: String, value: String },
     Relogin,
     Clear,
-    OpenUrl(String),
+    /// Open the fixed GitHub releases page. Carries no URL on purpose: the
+    /// page must not be able to make us ShellExecute an arbitrary target.
+    OpenUpdatePage,
 }
 
 pub struct Popup {
@@ -110,11 +112,7 @@ pub fn create_popup() -> Option<Popup> {
                         }
                         "relogin" => { let _ = tx.send(PopupMessage::Relogin); }
                         "clear" => { let _ = tx.send(PopupMessage::Clear); }
-                        "open" => {
-                            if let Some(u) = val["url"].as_str() {
-                                let _ = tx.send(PopupMessage::OpenUrl(u.to_string()));
-                            }
-                        }
+                        "open_update" => { let _ = tx.send(PopupMessage::OpenUpdatePage); }
                         _ => {}
                     }
                 }
@@ -162,8 +160,8 @@ pub fn push_data(popup: &Popup, data: &crate::api::UsageData, plan: &str) {
 }
 
 /// Show the "update available" banner in the dashboard with a download link.
-pub fn push_update(popup: &Popup, version: &str, url: &str) {
-    let js = format!("showUpdate('{}','{}')", js_escape(version), js_escape(url));
+pub fn push_update(popup: &Popup, version: &str) {
+    let js = format!("showUpdate('{}')", js_escape(version));
     let _ = popup.webview.evaluate_script(&js);
 }
 

@@ -62,7 +62,7 @@ pub enum AppMessage {
     /// or rate limit) so the tray reassures ("please wait") instead of alarming.
     Error { detail: String, transient: bool },
     TrayClicked { x: i32, y: i32 },
-    UpdateAvailable { version: String, url: String },
+    UpdateAvailable { version: String },
 }
 
 /// Mutable UI state carried across the main message loop and updated by
@@ -71,7 +71,7 @@ struct AppState {
     current_plan: String,
     last_data: Option<UsageData>,
     notified_threshold: bool,
-    update_info: Option<(String, String)>,
+    update_info: Option<String>,
 }
 
 /// How long to wait before re-checking GitHub after a check finds no update.
@@ -106,9 +106,7 @@ fn main() {
     let tx_upd = tx.clone();
     std::thread::spawn(move || loop {
         if let Some(info) = update::check() {
-            let _ = tx_upd.send(AppMessage::UpdateAvailable {
-                version: info.version, url: info.url,
-            });
+            let _ = tx_upd.send(AppMessage::UpdateAvailable { version: info.version });
             break;
         }
         std::thread::sleep(UPDATE_RECHECK);
@@ -179,10 +177,10 @@ fn handle_app_message(
             }
             state.last_data = Some(data);
         }
-        AppMessage::UpdateAvailable { version, url } => {
+        AppMessage::UpdateAvailable { version } => {
             #[cfg(debug_assertions)]
-            eprintln!("Update available: v{} ({})", version, url);
-            state.update_info = Some((version.clone(), url.clone()));
+            eprintln!("Update available: v{}", version);
+            state.update_info = Some(version.clone());
             // Re-render the tray icon with the red badge. Preserve the live
             // gauges if usage is already shown; otherwise badge the placeholder.
             match &state.last_data {
@@ -190,7 +188,7 @@ fn handle_app_message(
                 None => tray::set_badge(tray, true),
             }
             if let Some(ref p) = popup {
-                popup::push_update(p, &version, &url);
+                popup::push_update(p, &version);
             }
         }
         AppMessage::Error { detail, transient } => {
@@ -212,8 +210,8 @@ fn handle_app_message(
                 if let Some(ref data) = state.last_data {
                     popup::push_data(p, data, &state.current_plan);
                 }
-                if let Some((ref version, ref url)) = state.update_info {
-                    popup::push_update(p, version, url);
+                if let Some(ref version) = state.update_info {
+                    popup::push_update(p, version);
                 }
             }
         }
@@ -292,8 +290,8 @@ fn handle_popup_message(
             let _ = std::fs::remove_file(dir.join("session.json"));
             std::process::exit(0);
         }
-        popup::PopupMessage::OpenUrl(url) => {
-            win_util::open_url(&url);
+        popup::PopupMessage::OpenUpdatePage => {
+            win_util::open_url(update::RELEASES_PAGE);
         }
     }
 }

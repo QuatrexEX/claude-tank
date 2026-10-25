@@ -222,15 +222,15 @@ function relogin() { window.ipc.postMessage(JSON.stringify({type:'relogin'})); }
 function clearData() { window.ipc.postMessage(JSON.stringify({type:'clear'})); }
 
 // Update notice — pushed from Rust when a newer GitHub release exists.
-var updateUrl = '';
-function showUpdate(version, url) {
-  updateUrl = url;
+var updateShown = false;
+function showUpdate(version) {
+  updateShown = true;
   document.getElementById('update-msg').textContent = (L.update_available || 'New version') + ' v' + version;
   document.getElementById('update-link').textContent = '⬇ ' + (L.update_download || 'Download');
   document.getElementById('update-banner').classList.add('show');
 }
 function openUpdate() {
-  if (updateUrl) window.ipc.postMessage(JSON.stringify({type:'open',url:updateUrl}));
+  if (updateShown) window.ipc.postMessage(JSON.stringify({type:'open_update'}));
 }
 </script>
 </body></html>

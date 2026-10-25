@@ -8,13 +8,13 @@
 
 const RELEASES_LATEST: &str =
     "https://api.github.com/repos/QuatrexEX/claude-tank/releases/latest";
-const RELEASES_PAGE: &str = "https://github.com/QuatrexEX/claude-tank/releases/latest";
+/// Fixed download page. The API response's `html_url` is never used, so a
+/// tampered or spoofed response cannot redirect the user elsewhere.
+pub const RELEASES_PAGE: &str = "https://github.com/QuatrexEX/claude-tank/releases/latest";
 
 pub struct UpdateInfo {
     /// Version without the leading "v" (e.g. "1.5.0").
     pub version: String,
-    /// URL of the release page to open in the browser.
-    pub url: String,
 }
 
 /// Return `Some` if GitHub's latest release is newer than the running build.
@@ -36,14 +36,8 @@ pub fn check() -> Option<UpdateInfo> {
         return None;
     }
 
-    let url = body
-        .get("html_url")
-        .and_then(|v| v.as_str())
-        .unwrap_or(RELEASES_PAGE)
-        .to_string();
     Some(UpdateInfo {
         version: tag.trim_start_matches('v').to_string(),
-        url,
     })
 }
 
