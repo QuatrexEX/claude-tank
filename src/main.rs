@@ -470,55 +470,57 @@ fn open_login_webview(tx: mpsc::Sender<AppMessage>) {
 }
 
 fn try_detect_login(hwnd: windows::Win32::Foundation::HWND) {
-    LOGIN_WV.with(|cell| {
+    // Read the cookie in its own scope so the borrow of LOGIN_WV ends here.
+    // DestroyWindow below runs WM_DESTROY synchronously, and login_wnd_proc
+    // takes LOGIN_WV mutably there; holding this borrow across it panicked
+    // with "RefCell already borrowed" and aborted the app after login.
+    let session_key = LOGIN_WV.with(|cell| {
         let borrow = cell.borrow();
-        let Some(wv) = borrow.as_ref() else { return };
-
+        let wv = borrow.as_ref()?;
         let _ = wv.evaluate_script(BANNER_JS);
+        let cookies = wv.cookies_for_url("https://claude.ai").ok()?;
+        cookies.iter().find(|c| c.name() == "sessionKey").map(|c| c.value().to_string())
+    });
+    let Some(session_key) = session_key else { return };
 
-        let Ok(cookies) = wv.cookies_for_url("https://claude.ai") else { return };
-        let Some(session_cookie) = cookies.iter().find(|c| c.name() == "sessionKey") else { return };
-        let session_key = session_cookie.value().to_string();
+    #[cfg(debug_assertions)]
+    eprintln!("sessionKey detected! Validating...");
 
-        #[cfg(debug_assertions)]
-        eprintln!("sessionKey detected! Validating...");
+    unsafe {
+        let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(hwnd), TIMER_ID_COOKIE_POLL);
+    }
 
-        unsafe {
-            let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(Some(hwnd), TIMER_ID_COOKIE_POLL);
-        }
+    let extras = std::collections::HashMap::new();
+    let client = api::ApiClient::session(session_key.clone(), extras.clone());
 
-        let extras = std::collections::HashMap::new();
-        let client = api::ApiClient::session(session_key.clone(), extras.clone());
-
-        match client.get_org_id() {
-            Ok(org_id) => match client.get_usage(&org_id) {
-                Ok(data) => {
-                    let plan = client.detect_plan().unwrap_or_else(|_| "Pro".into());
-                    #[cfg(debug_assertions)]
-                    eprintln!("Login success! Plan={} 5h={:.0}% 7d={:.0}%", plan, data.five_hour, data.seven_day);
-                    let _ = AppConfig::save_credentials(&session_key, &extras);
-                    LOGIN_TX.with(|cell| {
-                        if let Some(tx) = cell.borrow().as_ref() {
-                            let _ = tx.send(AppMessage::LoginSuccess {
-                                org_id, plan, data, auth: api::AuthKind::Session,
-                            });
-                        }
-                    });
-                    unsafe { let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd); }
-                }
-                Err(_e) => {
-                    #[cfg(debug_assertions)]
-                    eprintln!("Usage fetch failed: {}. Retrying...", _e);
-                    restart_cookie_timer(hwnd);
-                }
-            },
+    match client.get_org_id() {
+        Ok(org_id) => match client.get_usage(&org_id) {
+            Ok(data) => {
+                let plan = client.detect_plan().unwrap_or_else(|_| "Pro".into());
+                #[cfg(debug_assertions)]
+                eprintln!("Login success! Plan={} 5h={:.0}% 7d={:.0}%", plan, data.five_hour, data.seven_day);
+                let _ = AppConfig::save_credentials(&session_key, &extras);
+                LOGIN_TX.with(|cell| {
+                    if let Some(tx) = cell.borrow().as_ref() {
+                        let _ = tx.send(AppMessage::LoginSuccess {
+                            org_id, plan, data, auth: api::AuthKind::Session,
+                        });
+                    }
+                });
+                unsafe { let _ = windows::Win32::UI::WindowsAndMessaging::DestroyWindow(hwnd); }
+            }
             Err(_e) => {
                 #[cfg(debug_assertions)]
-                eprintln!("Org fetch failed: {}. Retrying...", _e);
+                eprintln!("Usage fetch failed: {}. Retrying...", _e);
                 restart_cookie_timer(hwnd);
             }
+        },
+        Err(_e) => {
+            #[cfg(debug_assertions)]
+            eprintln!("Org fetch failed: {}. Retrying...", _e);
+            restart_cookie_timer(hwnd);
         }
-    });
+    }
 }
 
 fn restart_cookie_timer(hwnd: windows::Win32::Foundation::HWND) {
@@ -543,8 +545,10 @@ unsafe extern "system" fn login_wnd_proc(
             LRESULT(0)
         }
         WM_DESTROY => {
-            LOGIN_WV.with(|cell| *cell.borrow_mut() = None);
-            LOGIN_TX.with(|cell| *cell.borrow_mut() = None);
+            // try_borrow_mut: a panic cannot unwind out of a window procedure
+            // (the process aborts), so never risk one here.
+            LOGIN_WV.with(|cell| if let Ok(mut v) = cell.try_borrow_mut() { *v = None; });
+            LOGIN_TX.with(|cell| if let Ok(mut v) = cell.try_borrow_mut() { *v = None; });
             PostQuitMessage(0);
             LRESULT(0)
         }
