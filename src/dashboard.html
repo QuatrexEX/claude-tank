@@ -139,6 +139,7 @@ select:focus{border-color:var(--cyan);outline:none}
 var L = {
   tab_dashboard: 'Dashboard', tab_settings: 'Settings',
   interval: 'Update Interval', interval_desc: 'How often to check usage',
+  no_limit: 'No limit',
   threshold_5h: '5h Alert Threshold', threshold_5h_desc: '5h remaining drops below',
   threshold_7d: '7d Alert Threshold', threshold_7d_desc: '7d remaining drops below',
   autostart: 'Start with Windows', autostart_desc: 'Launch on login',
@@ -188,11 +189,22 @@ function updateDashboard(data) {
 }
 
 function renderTank(id, util, resetAt) {
-  var rem = 100 - util;
-  var color = tankColor(rem);
   var fill = document.getElementById('fill-' + id);
   var pct = document.getElementById('pct-' + id);
   var body = document.getElementById('tank-' + id);
+  // null = the plan has no limit for this window (verified Ultra, 5h).
+  if (util === null || util === undefined) {
+    fill.style.height = '100%';
+    fill.style.background = 'linear-gradient(0deg, #55556688, #55556644)';
+    fill.style.boxShadow = 'none';
+    pct.textContent = L.no_limit || 'No limit';
+    pct.style.color = '#888';
+    body.style.borderColor = '#55556660';
+    document.getElementById('reset-' + id).textContent = '';
+    return;
+  }
+  var rem = 100 - util;
+  var color = tankColor(rem);
   fill.style.height = rem + '%';
   fill.style.background = 'linear-gradient(0deg, ' + color + 'cc, ' + color + '88)';
   fill.style.boxShadow = '0 0 10px ' + color + '40';

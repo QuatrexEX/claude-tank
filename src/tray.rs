@@ -83,7 +83,12 @@ fn draw_update_dot(rgba: &mut [u8]) {
     }
 }
 
-fn generate_icon(five_hour_remaining: f64, seven_day_remaining: f64, update_available: bool) -> Icon {
+/// Muted grey for a gauge that does not apply (no 5-hour limit on the plan).
+const NO_LIMIT_COLOR: [u8; 4] = [0x55, 0x55, 0x66, 0xFF];
+
+/// `five_hour_remaining` is `None` when the plan has no 5-hour limit: the left
+/// bar is then drawn full in grey, so it never reads as a full cyan tank.
+fn generate_icon(five_hour_remaining: Option<f64>, seven_day_remaining: f64, update_available: bool) -> Icon {
     let mut rgba = vec![0u8; (ICON_SIZE * ICON_SIZE * 4) as usize];
 
     for y in 0..ICON_SIZE {
@@ -97,7 +102,10 @@ fn generate_icon(five_hour_remaining: f64, seven_day_remaining: f64, update_avai
         }
     }
 
-    draw_bar(&mut rgba, LEFT_BAR_X, five_hour_remaining, cyber_color(five_hour_remaining));
+    match five_hour_remaining {
+        Some(r5) => draw_bar(&mut rgba, LEFT_BAR_X, r5, cyber_color(r5)),
+        None => draw_bar(&mut rgba, LEFT_BAR_X, 100.0, NO_LIMIT_COLOR),
+    }
     draw_bar(&mut rgba, RIGHT_BAR_X, seven_day_remaining, cyber_color(seven_day_remaining));
 
     if update_available {
@@ -140,7 +148,7 @@ pub fn create_tray(
 
     let tray = TrayIconBuilder::new()
         .with_tooltip(format!("Claude Tank\n{}", strings.get("tray_connecting")))
-        .with_icon(generate_icon(100.0, 100.0, false))
+        .with_icon(generate_icon(Some(100.0), 100.0, false))
         .with_menu(Box::new(menu))
         .with_menu_on_left_click(false) // Left click = popup, right click = menu
         .build()
@@ -186,14 +194,14 @@ pub fn create_tray(
 /// gauges. Used when an update is found before any usage data has loaded, so
 /// the red dot still appears; the next usage update re-renders the real gauges.
 pub fn set_badge(tray: &TrayIcon, update_available: bool) {
-    let _ = tray.set_icon(Some(generate_icon(100.0, 100.0, update_available)));
+    let _ = tray.set_icon(Some(generate_icon(Some(100.0), 100.0, update_available)));
 }
 
 pub fn update_tray(
     tray: &TrayIcon, data: &crate::api::UsageData,
-    plan: &str, update_available: bool, _strings: &crate::i18n::Strings,
+    plan: &str, update_available: bool, strings: &crate::i18n::Strings,
 ) {
-    let r5 = 100.0 - data.five_hour;
+    let r5 = data.five_hour.map(|u| 100.0 - u);
     let r7 = 100.0 - data.seven_day;
     let _ = tray.set_icon(Some(generate_icon(r5, r7, update_available)));
 
@@ -207,11 +215,14 @@ pub fn update_tray(
             .map(|t| format!(" ({})", t))
             .unwrap_or_default()
     };
-    let r5_reset = fmt_reset(&data.five_hour_reset);
+    let r5_line = match r5 {
+        Some(r5) => format!("{:.0}%{}", r5, fmt_reset(&data.five_hour_reset)),
+        None => strings.get("no_limit").to_string(),
+    };
     let r7_reset = fmt_reset(&data.seven_day_reset);
 
     let _ = tray.set_tooltip(Some(&format!(
-        "Claude Tank \u{2014} {}\n5h: {:.0}%{}\n7d: {:.0}%{}",
-        plan, r5, r5_reset, r7, r7_reset
+        "Claude Tank \u{2014} {}\n5h: {}\n7d: {:.0}%{}",
+        plan, r5_line, r7, r7_reset
     )));
 }

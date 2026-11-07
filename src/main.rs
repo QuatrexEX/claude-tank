@@ -227,19 +227,20 @@ fn check_threshold(
     strings: &i18n::Strings,
 ) {
     let cfg = config.lock().unwrap();
-    let r5 = 100.0 - data.five_hour;
+    let r5 = data.five_hour.map(|u| 100.0 - u);
     let r7 = 100.0 - data.seven_day;
     let t5 = cfg.threshold_5h as f64;
     let t7 = cfg.threshold_7d as f64;
     drop(cfg);
 
     let left = strings.get("tray_left");
-    let alert_5h = t5 > 0.0 && r5 <= t5;
+    // No 5-hour limit on the plan -> never a 5h alert.
+    let alert_5h = r5.is_some_and(|r5| t5 > 0.0 && r5 <= t5);
     let alert_7d = t7 > 0.0 && r7 <= t7;
     if !*notified && (alert_5h || alert_7d) {
         let title = format!("Claude Tank \u{2014} {}", plan);
         let mut lines: Vec<String> = Vec::new();
-        if alert_5h { lines.push(format!("5h: {:.0}% {}", r5, left)); }
+        if let (true, Some(r5)) = (alert_5h, r5) { lines.push(format!("5h: {:.0}% {}", r5, left)); }
         if alert_7d { lines.push(format!("7d: {:.0}% {}", r7, left)); }
         let body = lines.join("\n");
         // Tooltip persists on hover; the balloon grabs attention once per crossing.
@@ -307,7 +308,7 @@ fn try_resume_session(tx: &mpsc::Sender<AppMessage>) -> bool {
             Ok(data) => {
                 let plan = api::plan_from_creds(&creds);
                 #[cfg(debug_assertions)]
-                eprintln!("Resumed via Claude Code. Plan={} 5h={:.0}% 7d={:.0}%",
+                eprintln!("Resumed via Claude Code. Plan={} 5h={:?}% 7d={:.0}%",
                     plan, data.five_hour, data.seven_day);
                 let _ = tx.send(AppMessage::LoginSuccess {
                     org_id: String::new(), plan, data, auth: api::AuthKind::ClaudeCode,
@@ -498,7 +499,7 @@ fn try_detect_login(hwnd: windows::Win32::Foundation::HWND) {
             Ok(data) => {
                 let plan = client.detect_plan().unwrap_or_else(|_| "Pro".into());
                 #[cfg(debug_assertions)]
-                eprintln!("Login success! Plan={} 5h={:.0}% 7d={:.0}%", plan, data.five_hour, data.seven_day);
+                eprintln!("Login success! Plan={} 5h={:?}% 7d={:.0}%", plan, data.five_hour, data.seven_day);
                 let _ = AppConfig::save_credentials(&session_key, &extras);
                 LOGIN_TX.with(|cell| {
                     if let Some(tx) = cell.borrow().as_ref() {

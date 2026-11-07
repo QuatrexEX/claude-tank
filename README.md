@@ -8,7 +8,7 @@
 
 ---
 
-**Claude Tank** is a lightweight Windows system tray app that monitors your Claude Pro/Max/Team plan usage limits in real-time.
+**Claude Tank** is a lightweight Windows system tray app that monitors your Claude Pro/Max/Ultra/Team plan usage limits in real-time.
 
 No more surprise rate limits — see your 5-hour and 7-day remaining capacity at a glance.
 

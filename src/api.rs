@@ -10,7 +10,9 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Default)]
 pub struct UsageData {
-    pub five_hour: f64,
+    /// `None` when the plan has no 5-hour limit (verified Ultra accounts); the
+    /// API then returns `five_hour: null`. Shown as "no limit", never as 100%.
+    pub five_hour: Option<f64>,
     pub five_hour_reset: Option<String>,
     pub seven_day: f64,
     pub seven_day_reset: Option<String>,
@@ -181,9 +183,9 @@ impl ApiClient {
     /// The claude.ai `/organizations` response does not carry a single "plan" field.
     /// The richest signal is `rate_limit_tier` (e.g. "default_claude_max_5x",
     /// "default_claude_max_20x", "default_claude_pro"), which also encodes the Max
-    /// multiplier. `capabilities` (e.g. ["chat","claude_max"]) is the fallback.
+    /// multiplier (20x is the plan now sold as Ultra). `capabilities` (e.g. ["chat","claude_max"]) is the fallback.
     pub fn detect_plan_from_org(org: &serde_json::Value) -> Result<String, String> {
-        // 1. rate_limit_tier — most precise, distinguishes Max 5x / 20x.
+        // 1. rate_limit_tier — most precise, distinguishes Max / Ultra.
         if let Some(name) = org.get("rate_limit_tier")
             .and_then(|v| v.as_str())
             .and_then(plan_from_hint)
@@ -225,7 +227,9 @@ impl ApiClient {
         if raw.get("error").is_some() {
             return Err(ApiError::Other("API returned an error object".into()));
         }
-        if raw.get("five_hour").is_none() && raw.get("seven_day").is_none() {
+        // `null` counts as absent: a verified Ultra plan returns five_hour: null.
+        let present = |k: &str| raw.get(k).is_some_and(|v| !v.is_null());
+        if !present("five_hour") && !present("seven_day") {
             return Err(ApiError::Other("Unexpected usage response shape".into()));
         }
         Ok(parse_usage(&raw))
@@ -254,15 +258,18 @@ fn pick_org(orgs: &[serde_json::Value]) -> Option<&serde_json::Value> {
 
 /// Map a raw hint (rate_limit_tier, capability, or plan_type) to a display name.
 /// Returns None when no known plan keyword is present so callers can fall through.
+///
+/// Uses Claude's current plan names (Oct 2026): the former "Max 20x" is sold as
+/// "Ultra" and "Max 5x" simply as "Max". The internal identifiers still say
+/// `max_20x` / `max_5x`, so both the old and any future "ultra" form map here.
 fn plan_from_hint(raw: &str) -> Option<String> {
     let lower = raw.to_lowercase();
     if lower.contains("enterprise") { Some("Enterprise".into()) }
     else if lower.contains("team") { Some("Team".into()) }
-    else if lower.contains("max") {
-        if lower.contains("20") { Some("Max (20x)".into()) }
-        else if lower.contains('5') { Some("Max (5x)".into()) }
-        else { Some("Max".into()) }
+    else if lower.contains("ultra") || (lower.contains("max") && lower.contains("20")) {
+        Some("Ultra".into())
     }
+    else if lower.contains("max") { Some("Max".into()) }
     else if lower.contains("pro") { Some("Pro".into()) }
     else if lower.contains("free") { Some("Free".into()) }
     else { None }
@@ -279,7 +286,14 @@ fn parse_usage(raw: &serde_json::Value) -> UsageData {
         }
     }
 
-    let (fh, fh_r) = block(raw, "five_hour");
+    // A missing or null five_hour block means the plan has no 5-hour limit.
+    let (fh, fh_r) = match raw.get("five_hour").filter(|v| v.is_object()) {
+        Some(_) => {
+            let (u, r) = block(raw, "five_hour");
+            (Some(u), r)
+        }
+        None => (None, None),
+    };
     let (sd, sd_r) = block(raw, "seven_day");
     let (op, _) = block(raw, "seven_day_opus");
     let (so, _) = block(raw, "seven_day_sonnet");
@@ -288,5 +302,48 @@ fn parse_usage(raw: &serde_json::Value) -> UsageData {
         five_hour: fh, five_hour_reset: fh_r,
         seven_day: sd, seven_day_reset: sd_r,
         opus: op, sonnet: so,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_usage, plan_from_hint};
+    use serde_json::json;
+
+    #[test]
+    fn maps_current_plan_names() {
+        // Internal identifiers still carry the old Max multipliers.
+        assert_eq!(plan_from_hint("default_claude_max_20x").as_deref(), Some("Ultra"));
+        assert_eq!(plan_from_hint("default_claude_max_5x").as_deref(), Some("Max"));
+        assert_eq!(plan_from_hint("max").as_deref(), Some("Max"));
+        assert_eq!(plan_from_hint("default_claude_ultra").as_deref(), Some("Ultra"));
+        assert_eq!(plan_from_hint("default_claude_pro").as_deref(), Some("Pro"));
+        assert_eq!(plan_from_hint("chat,claude_max").as_deref(), Some("Max"));
+        assert_eq!(plan_from_hint("team").as_deref(), Some("Team"));
+        assert_eq!(plan_from_hint("enterprise").as_deref(), Some("Enterprise"));
+        assert_eq!(plan_from_hint("api"), None);
+    }
+
+    #[test]
+    fn null_five_hour_means_no_limit() {
+        let raw = json!({
+            "five_hour": null,
+            "seven_day": { "utilization": 42.0, "resets_at": "2026-11-10T00:00:00Z" }
+        });
+        let d = parse_usage(&raw);
+        assert_eq!(d.five_hour, None);
+        assert_eq!(d.five_hour_reset, None);
+        assert_eq!(d.seven_day, 42.0);
+    }
+
+    #[test]
+    fn present_five_hour_is_read() {
+        let raw = json!({
+            "five_hour": { "utilization": 12.5, "resets_at": "2026-11-08T03:00:00Z" },
+            "seven_day": { "utilization": 30.0, "resets_at": null }
+        });
+        let d = parse_usage(&raw);
+        assert_eq!(d.five_hour, Some(12.5));
+        assert_eq!(d.five_hour_reset.as_deref(), Some("2026-11-08T03:00:00Z"));
     }
 }
